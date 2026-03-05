@@ -1,0 +1,30 @@
+# ──────────────────────────────────────────────────────────────────────
+# RIDE State Schema Reference
+# ──────────────────────────────────────────────────────────────────────
+# This file documents every data entry key the AMM dApp writes.
+# Use this for SDK development, indexer queries, and auditing.
+# ──────────────────────────────────────────────────────────────────────
+
+# ─── Global State ────────────────────────────────────────────────────
+
+global_paused       : Boolean   # Emergency pause flag
+global_admin        : String    # Admin address (pause/unpause only)
+global_poolCount    : Integer   # Total number of pools created
+
+# ─── Pool Index ──────────────────────────────────────────────────────
+
+poolIndex_<N>       : String    # Pool key at index N (0-based)
+                                # N ranges from 0 to global_poolCount - 1
+
+# ─── Per-Pool State ──────────────────────────────────────────────────
+# <PK> = pool key, e.g., "DCC_3PAbcd..."
+
+pool_<PK>_exists    : Boolean   # Pool existence flag
+pool_<PK>_assetA    : String    # Canonical first asset ID
+pool_<PK>_assetB    : String    # Canonical second asset ID
+pool_<PK>_reserveA  : Integer   # Reserve of token A (raw integer units)
+pool_<PK>_reserveB  : Integer   # Reserve of token B (raw integer units)
+pool_<PK>_lpAsset   : String    # LP token asset ID (base58)
+pool_<PK>_lpSupply  : Integer   # Total LP token supply
+pool_<PK>_feeBps    : Integer   # Fee in basis points (10-100)
+pool_<PK>_status    : String    # "active" or "paused"

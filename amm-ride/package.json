@@ -1,0 +1,16 @@
+{
+  "name": "@dcc-amm/ride",
+  "version": "1.0.0",
+  "description": "RIDE smart contracts for DCC AMM protocol",
+  "scripts": {
+    "compile": "node scripts/compile.js",
+    "deploy": "ts-node scripts/deploy.ts",
+    "test": "jest --verbose"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "ts-node": "^10.9.0",
+    "@types/node": "^20.0.0"
+  },
+  "license": "MIT"
+}

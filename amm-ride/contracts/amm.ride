@@ -1,0 +1,585 @@
+# ──────────────────────────────────────────────────────────────────────
+# DCC AMM Swap — Main dApp Script
+# Constant-product (x·y=k) automated market maker
+# ──────────────────────────────────────────────────────────────────────
+# Version: 1.0.0
+# Security model: See amm-docs/threat-model.md
+# ──────────────────────────────────────────────────────────────────────
+
+{-# STDLIB_VERSION 6 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+
+# ──────────────────────────────────────────────────────────────────────
+# CONSTANTS
+# ──────────────────────────────────────────────────────────────────────
+
+let MINIMUM_LIQUIDITY = 1000
+let BPS_DENOMINATOR   = 10000
+let MIN_FEE_BPS       = 10
+let MAX_FEE_BPS       = 100
+let DCC_ID            = "DCC"
+let LP_DECIMALS       = 8
+let LP_PREFIX         = "DCC-AMM-LP"
+let ZERO              = 0
+
+# Maximum initial deposit per token (safety cap, ~10^15 raw units)
+let MAX_DEPOSIT       = 1000000000000000
+
+# ──────────────────────────────────────────────────────────────────────
+# HELPER FUNCTIONS
+# ──────────────────────────────────────────────────────────────────────
+
+# Convert an optional asset ID (from payment) to a string key.
+# Native DCC is represented as null in payments → "DCC" in state.
+func assetIdToStr(assetId: ByteVector|Unit) = {
+  match assetId {
+    case b: ByteVector => toBase58String(b)
+    case _ => DCC_ID
+  }
+}
+
+# Convert a string asset ID back to ByteVector|Unit for transfers.
+func strToAssetId(s: String) = {
+  if (s == DCC_ID) then unit else fromBase58String(s)
+}
+
+# Canonical sort: return (first, second) where first < second lexicographically.
+func canonicalOrder(a: String, b: String) = {
+  if (a < b) then (a, b)
+  else if (b < a) then (b, a)
+  else throw("Assets must be different")
+}
+
+# Pool key from two asset ID strings.
+func makePoolKey(assetAStr: String, assetBStr: String) = {
+  let (first, second) = canonicalOrder(assetAStr, assetBStr)
+  first + "_" + second
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# STATE READ HELPERS
+# ──────────────────────────────────────────────────────────────────────
+
+func keyPoolExists(pk: String)  = "pool_" + pk + "_exists"
+func keyAssetA(pk: String)      = "pool_" + pk + "_assetA"
+func keyAssetB(pk: String)      = "pool_" + pk + "_assetB"
+func keyReserveA(pk: String)    = "pool_" + pk + "_reserveA"
+func keyReserveB(pk: String)    = "pool_" + pk + "_reserveB"
+func keyLpAsset(pk: String)     = "pool_" + pk + "_lpAsset"
+func keyLpSupply(pk: String)    = "pool_" + pk + "_lpSupply"
+func keyFeeBps(pk: String)      = "pool_" + pk + "_feeBps"
+func keyStatus(pk: String)      = "pool_" + pk + "_status"
+func keyPoolCount()             = "global_poolCount"
+func keyAdmin()                 = "global_admin"
+func keyPaused()                = "global_paused"
+func keyPoolIndex(n: Int)       = "poolIndex_" + toString(n)
+
+func getPoolExists(pk: String) = valueOrElse(getBoolean(this, keyPoolExists(pk)), false)
+func getReserveA(pk: String)   = valueOrErrorMessage(getInteger(this, keyReserveA(pk)), "No reserveA")
+func getReserveB(pk: String)   = valueOrErrorMessage(getInteger(this, keyReserveB(pk)), "No reserveB")
+func getLpSupply(pk: String)   = valueOrErrorMessage(getInteger(this, keyLpSupply(pk)), "No lpSupply")
+func getFeeBps(pk: String)     = valueOrErrorMessage(getInteger(this, keyFeeBps(pk)), "No feeBps")
+func getLpAssetId(pk: String)  = valueOrErrorMessage(getString(this, keyLpAsset(pk)), "No lpAsset")
+func getStatus(pk: String)     = valueOrElse(getString(this, keyStatus(pk)), "active")
+func getPoolCount()            = valueOrElse(getInteger(this, keyPoolCount()), 0)
+func isPaused()                = valueOrElse(getBoolean(this, keyPaused()), false)
+func getAdmin()                = valueOrElse(getString(this, keyAdmin()), "")
+
+# ──────────────────────────────────────────────────────────────────────
+# MATH
+# ──────────────────────────────────────────────────────────────────────
+
+# Integer square root via Newton's method.
+# Returns floor(sqrt(n)).
+func isqrt(n: Int) = {
+  if (n == 0) then 0
+  else if (n == 1) then 1
+  else {
+    # Newton's method with bounded iterations.
+    # For Int (up to ~9.2e18), convergence takes at most ~32 iterations.
+    let x0 = n
+    let y0 = (x0 + 1) / 2
+    let (x1, y1)   = if (y0 < x0)  then (y0, (y0 + n / y0) / 2)  else (x0, y0)
+    let (x2, y2)   = if (y1 < x1)  then (y1, (y1 + n / y1) / 2)  else (x1, y1)
+    let (x3, y3)   = if (y2 < x2)  then (y2, (y2 + n / y2) / 2)  else (x2, y2)
+    let (x4, y4)   = if (y3 < x3)  then (y3, (y3 + n / y3) / 2)  else (x3, y3)
+    let (x5, y5)   = if (y4 < x4)  then (y4, (y4 + n / y4) / 2)  else (x4, y4)
+    let (x6, y6)   = if (y5 < x5)  then (y5, (y5 + n / y5) / 2)  else (x5, y5)
+    let (x7, y7)   = if (y6 < x6)  then (y6, (y6 + n / y6) / 2)  else (x6, y6)
+    let (x8, y8)   = if (y7 < x7)  then (y7, (y7 + n / y7) / 2)  else (x7, y7)
+    let (x9, y9)   = if (y8 < x8)  then (y8, (y8 + n / y8) / 2)  else (x8, y8)
+    let (x10, y10) = if (y9 < x9)  then (y9, (y9 + n / y9) / 2)  else (x9, y9)
+    let (x11, y11) = if (y10 < x10) then (y10, (y10 + n / y10) / 2) else (x10, y10)
+    let (x12, y12) = if (y11 < x11) then (y11, (y11 + n / y11) / 2) else (x11, y11)
+    let (x13, y13) = if (y12 < x12) then (y12, (y12 + n / y12) / 2) else (x12, y12)
+    let (x14, y14) = if (y13 < x13) then (y13, (y13 + n / y13) / 2) else (x13, y13)
+    let (x15, y15) = if (y14 < x14) then (y14, (y14 + n / y14) / 2) else (x14, y14)
+    let (x16, y16) = if (y15 < x15) then (y15, (y15 + n / y15) / 2) else (x15, y15)
+    let (x17, y17) = if (y16 < x16) then (y16, (y16 + n / y16) / 2) else (x16, y16)
+    let (x18, y18) = if (y17 < x17) then (y17, (y17 + n / y17) / 2) else (x17, y17)
+    let (x19, y19) = if (y18 < x18) then (y18, (y18 + n / y18) / 2) else (x18, y18)
+    let (x20, y20) = if (y19 < x19) then (y19, (y19 + n / y19) / 2) else (x19, y19)
+    let (x21, y21) = if (y20 < x20) then (y20, (y20 + n / y20) / 2) else (x20, y20)
+    let (x22, y22) = if (y21 < x21) then (y21, (y21 + n / y21) / 2) else (x21, y21)
+    let (x23, y23) = if (y22 < x22) then (y22, (y22 + n / y22) / 2) else (x22, y22)
+    let (x24, y24) = if (y23 < x23) then (y23, (y23 + n / y23) / 2) else (x23, y23)
+    let (x25, y25) = if (y24 < x24) then (y24, (y24 + n / y24) / 2) else (x24, y24)
+    let (x26, y26) = if (y25 < x25) then (y25, (y25 + n / y25) / 2) else (x25, y25)
+    let (x27, y27) = if (y26 < x26) then (y26, (y26 + n / y26) / 2) else (x26, y26)
+    let (x28, y28) = if (y27 < x27) then (y27, (y27 + n / y27) / 2) else (x27, y27)
+    let (x29, y29) = if (y28 < x28) then (y28, (y28 + n / y28) / 2) else (x28, y28)
+    let (x30, y30) = if (y29 < x29) then (y29, (y29 + n / y29) / 2) else (x29, y29)
+    let (x31, y31) = if (y30 < x30) then (y30, (y30 + n / y30) / 2) else (x30, y30)
+    let (x32, _)   = if (y31 < x31) then (y31, (y31 + n / y31) / 2) else (x31, y31)
+    x32
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# VALIDATION HELPERS
+# ──────────────────────────────────────────────────────────────────────
+
+func requireNotPaused() = {
+  if (isPaused()) then throw("Protocol is paused") else true
+}
+
+func requirePoolActive(pk: String) = {
+  if (!getPoolExists(pk)) then throw("Pool does not exist")
+  else if (getStatus(pk) != "active") then throw("Pool is not active")
+  else true
+}
+
+func requireDeadline(deadline: Int) = {
+  if (deadline < height) then throw("Transaction expired: deadline " + toString(deadline) + " < height " + toString(height))
+  else true
+}
+
+func requireAdmin(caller: Address) = {
+  let admin = getAdmin()
+  if (admin == "") then throw("No admin set")
+  else if (toString(caller) != admin) then throw("Only admin can call this function")
+  else true
+}
+
+# Check that an asset is NOT a smart/scripted asset.
+# Scripted assets can have transfer restrictions that could break the AMM.
+func requireNotScripted(assetIdStr: String) = {
+  if (assetIdStr == DCC_ID) then true
+  else {
+    let info = valueOrErrorMessage(assetInfo(fromBase58String(assetIdStr)), "Asset not found: " + assetIdStr)
+    if (info.scripted) then throw("Scripted assets not supported in v1: " + assetIdStr)
+    else true
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# CALLABLE: createPool
+# ──────────────────────────────────────────────────────────────────────
+# Creates a new pool for a pair of assets.
+# Payments: [0] = tokenA amount, [1] = tokenB amount
+# The canonical order is determined internally; payment order doesn't matter.
+# ──────────────────────────────────────────────────────────────────────
+
+@Callable(i)
+func createPool(feeBps: Int) = {
+  strict _np = requireNotPaused()
+
+  # Validate fee range
+  if (feeBps < MIN_FEE_BPS || feeBps > MAX_FEE_BPS)
+    then throw("Fee must be between " + toString(MIN_FEE_BPS) + " and " + toString(MAX_FEE_BPS) + " bps")
+  else if (size(i.payments) != 2)
+    then throw("Exactly 2 payments required")
+  else {
+    let pmt0 = i.payments[0]
+    let pmt1 = i.payments[1]
+
+    let asset0Str = assetIdToStr(pmt0.assetId)
+    let asset1Str = assetIdToStr(pmt1.assetId)
+
+    # Determine canonical order
+    let (canonA, canonB) = canonicalOrder(asset0Str, asset1Str)
+    let pk = canonA + "_" + canonB
+
+    # Is payment[0] the canonical A?
+    let pmt0IsA = (asset0Str == canonA)
+    let amountA = if (pmt0IsA) then pmt0.amount else pmt1.amount
+    let amountB = if (pmt0IsA) then pmt1.amount else pmt0.amount
+
+    # Validations
+    if (getPoolExists(pk)) then throw("Pool already exists: " + pk)
+    else if (amountA <= 0 || amountB <= 0) then throw("Amounts must be positive")
+    else if (amountA > MAX_DEPOSIT || amountB > MAX_DEPOSIT) then throw("Amount exceeds safety cap")
+    else {
+      strict _sa = requireNotScripted(canonA)
+      strict _sb = requireNotScripted(canonB)
+
+      # Compute initial LP supply
+      let sqrtK = isqrt(amountA * amountB)
+      if (sqrtK <= MINIMUM_LIQUIDITY)
+        then throw("Insufficient initial liquidity: sqrt(" + toString(amountA) + " * " + toString(amountB) + ") = " + toString(sqrtK) + " <= " + toString(MINIMUM_LIQUIDITY))
+      else {
+        let totalLpSupply = sqrtK
+        let lpMinted = sqrtK - MINIMUM_LIQUIDITY
+
+        # Construct LP token name (truncate pool key if too long)
+        let lpName = LP_PREFIX + "-" + take(pk, 20)
+        let lpDescription = "AMM LP token for pool " + pk
+
+        let poolCount = getPoolCount()
+
+        # Issue LP token + write all state atomically
+        let lpIssue = Issue(lpName, lpDescription, totalLpSupply, LP_DECIMALS, true)
+        let lpAssetId = calculateAssetId(lpIssue)
+
+        [
+          # LP token issuance
+          lpIssue,
+
+          # Pool metadata
+          BooleanEntry(keyPoolExists(pk), true),
+          StringEntry(keyAssetA(pk), canonA),
+          StringEntry(keyAssetB(pk), canonB),
+          IntegerEntry(keyFeeBps(pk), feeBps),
+          StringEntry(keyStatus(pk), "active"),
+
+          # LP asset ID (critical: used by addLiquidity / removeLiquidity)
+          StringEntry(keyLpAsset(pk), toBase58String(lpAssetId)),
+
+          # Reserves
+          IntegerEntry(keyReserveA(pk), amountA),
+          IntegerEntry(keyReserveB(pk), amountB),
+
+          # LP supply tracking
+          IntegerEntry(keyLpSupply(pk), totalLpSupply),
+
+          # Pool index
+          IntegerEntry(keyPoolCount(), poolCount + 1),
+          StringEntry(keyPoolIndex(poolCount), pk),
+
+          # Transfer LP tokens to creator (minus MINIMUM_LIQUIDITY which stays in dApp)
+          ScriptTransfer(i.caller, lpMinted, lpAssetId)
+        ]
+      }
+    }
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# CALLABLE: addLiquidity
+# ──────────────────────────────────────────────────────────────────────
+# Adds liquidity to an existing pool proportionally.
+# Payments: [0] = tokenA amount, [1] = tokenB amount
+# Any excess is refunded.
+# ──────────────────────────────────────────────────────────────────────
+
+@Callable(i)
+func addLiquidity(poolKey: String, minLpOut: Int, deadline: Int) = {
+  strict _np = requireNotPaused()
+  strict _pa = requirePoolActive(poolKey)
+  strict _dl = requireDeadline(deadline)
+
+  if (size(i.payments) != 2)
+    then throw("Exactly 2 payments required")
+  else {
+    let pmt0 = i.payments[0]
+    let pmt1 = i.payments[1]
+
+    let asset0Str = assetIdToStr(pmt0.assetId)
+    let asset1Str = assetIdToStr(pmt1.assetId)
+
+    let canonA = valueOrErrorMessage(getString(this, keyAssetA(poolKey)), "Pool not found")
+    let canonB = valueOrErrorMessage(getString(this, keyAssetB(poolKey)), "Pool not found")
+
+    # Map payments to canonical order
+    let pmt0IsA = (asset0Str == canonA)
+    let pmt0IsB = (asset0Str == canonB)
+    let pmt1IsA = (asset1Str == canonA)
+    let pmt1IsB = (asset1Str == canonB)
+
+    if (!((pmt0IsA && pmt1IsB) || (pmt0IsB && pmt1IsA)))
+      then throw("Payments must match pool assets: " + canonA + " and " + canonB)
+    else {
+      let depositA = if (pmt0IsA) then pmt0.amount else pmt1.amount
+      let depositB = if (pmt0IsA) then pmt1.amount else pmt0.amount
+
+      if (depositA <= 0 || depositB <= 0) then throw("Amounts must be positive")
+      else {
+        let reserveA = getReserveA(poolKey)
+        let reserveB = getReserveB(poolKey)
+        let lpSupply = getLpSupply(poolKey)
+        let lpAssetStr = getLpAssetId(poolKey)
+        let lpAssetId = fromBase58String(lpAssetStr)
+
+        # Compute LP from each side
+        let lpFromA = fraction(depositA, lpSupply, reserveA)
+        let lpFromB = fraction(depositB, lpSupply, reserveB)
+
+        # Use minimum (ensures proportional deposit)
+        let lpMinted = if (lpFromA < lpFromB) then lpFromA else lpFromB
+
+        if (lpMinted <= 0) then throw("Deposit amounts too small to mint LP tokens")
+        else if (lpMinted < minLpOut) then throw("LP minted " + toString(lpMinted) + " < minLpOut " + toString(minLpOut))
+        else {
+          # Calculate actual amounts used
+          let (actualA, actualB, refundA, refundB) = if (lpFromA <= lpFromB) then {
+            let aUsed = depositA
+            let bUsed = fraction(lpMinted, reserveB, lpSupply)
+            let bRef  = depositB - bUsed
+            (aUsed, bUsed, 0, bRef)
+          } else {
+            let bUsed = depositB
+            let aUsed = fraction(lpMinted, reserveA, lpSupply)
+            let aRef  = depositA - aUsed
+            (aUsed, bUsed, aRef, 0)
+          }
+
+          let newReserveA = reserveA + actualA
+          let newReserveB = reserveB + actualB
+          let newLpSupply = lpSupply + lpMinted
+
+          # Build result actions
+          let baseActions = [
+            IntegerEntry(keyReserveA(poolKey), newReserveA),
+            IntegerEntry(keyReserveB(poolKey), newReserveB),
+            IntegerEntry(keyLpSupply(poolKey), newLpSupply),
+            Reissue(lpAssetId, lpMinted, true),
+            ScriptTransfer(i.caller, lpMinted, lpAssetId)
+          ]
+
+          # Add refunds if needed
+          let withRefundA = if (refundA > 0)
+            then baseActions :+ ScriptTransfer(i.caller, refundA, strToAssetId(canonA))
+            else baseActions
+
+          let withRefundB = if (refundB > 0)
+            then withRefundA :+ ScriptTransfer(i.caller, refundB, strToAssetId(canonB))
+            else withRefundA
+
+          withRefundB
+        }
+      }
+    }
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# CALLABLE: removeLiquidity
+# ──────────────────────────────────────────────────────────────────────
+# Burns LP tokens and returns proportional share of reserves.
+# Payments: [0] = LP token amount
+# ──────────────────────────────────────────────────────────────────────
+
+@Callable(i)
+func removeLiquidity(poolKey: String, minAOut: Int, minBOut: Int, deadline: Int) = {
+  strict _np = requireNotPaused()
+  strict _dl = requireDeadline(deadline)
+
+  if (!getPoolExists(poolKey)) then throw("Pool does not exist")
+  else if (size(i.payments) != 1)
+    then throw("Exactly 1 payment (LP token) required")
+  else {
+    let pmt = i.payments[0]
+    let lpAssetStr = getLpAssetId(poolKey)
+    let lpAssetId = fromBase58String(lpAssetStr)
+
+    if (pmt.assetId != lpAssetId) then throw("Payment must be the pool's LP token")
+    else {
+      let lpBurn = pmt.amount
+      if (lpBurn <= 0) then throw("LP amount must be positive")
+      else {
+        let reserveA = getReserveA(poolKey)
+        let reserveB = getReserveB(poolKey)
+        let lpSupply = getLpSupply(poolKey)
+
+        if (lpBurn > lpSupply) then throw("Cannot burn more LP than total supply")
+        else {
+          let amountAOut = fraction(lpBurn, reserveA, lpSupply)
+          let amountBOut = fraction(lpBurn, reserveB, lpSupply)
+
+          if (amountAOut == 0 && amountBOut == 0) then throw("Withdrawal amounts are zero")
+          else if (amountAOut < minAOut) then throw("amountAOut " + toString(amountAOut) + " < minAOut " + toString(minAOut))
+          else if (amountBOut < minBOut) then throw("amountBOut " + toString(amountBOut) + " < minBOut " + toString(minBOut))
+          else {
+            let canonA = valueOrErrorMessage(getString(this, keyAssetA(poolKey)), "Pool not found")
+            let canonB = valueOrErrorMessage(getString(this, keyAssetB(poolKey)), "Pool not found")
+
+            let newReserveA = reserveA - amountAOut
+            let newReserveB = reserveB - amountBOut
+            let newLpSupply = lpSupply - lpBurn
+
+            [
+              IntegerEntry(keyReserveA(poolKey), newReserveA),
+              IntegerEntry(keyReserveB(poolKey), newReserveB),
+              IntegerEntry(keyLpSupply(poolKey), newLpSupply),
+              Burn(lpAssetId, lpBurn),
+              ScriptTransfer(i.caller, amountAOut, strToAssetId(canonA)),
+              ScriptTransfer(i.caller, amountBOut, strToAssetId(canonB))
+            ]
+          }
+        }
+      }
+    }
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# CALLABLE: swapExactIn
+# ──────────────────────────────────────────────────────────────────────
+# Swaps an exact input amount of one token for as much of the other as possible.
+# Fee is deducted from the input. The full input is added to reserves.
+# Payments: [0] = input token amount
+# ──────────────────────────────────────────────────────────────────────
+
+@Callable(i)
+func swapExactIn(poolKey: String, minAmountOut: Int, deadline: Int) = {
+  strict _np = requireNotPaused()
+  strict _pa = requirePoolActive(poolKey)
+  strict _dl = requireDeadline(deadline)
+
+  if (size(i.payments) != 1) then throw("Exactly 1 payment required")
+  else {
+    let pmt = i.payments[0]
+    let inputAssetStr = assetIdToStr(pmt.assetId)
+    let amountIn = pmt.amount
+
+    if (amountIn <= 0) then throw("Input amount must be positive")
+    else {
+      let canonA = valueOrErrorMessage(getString(this, keyAssetA(poolKey)), "Pool not found")
+      let canonB = valueOrErrorMessage(getString(this, keyAssetB(poolKey)), "Pool not found")
+      let reserveA = getReserveA(poolKey)
+      let reserveB = getReserveB(poolKey)
+      let feeBps = getFeeBps(poolKey)
+
+      # Determine swap direction
+      let (reserveIn, reserveOut, outputAssetStr, isAToB) = if (inputAssetStr == canonA) then {
+        (reserveA, reserveB, canonB, true)
+      } else if (inputAssetStr == canonB) then {
+        (reserveB, reserveA, canonA, false)
+      } else {
+        throw("Input asset not in pool. Expected " + canonA + " or " + canonB + ", got " + inputAssetStr)
+      }
+
+      # Compute output using constant-product formula with fee
+      let amountInWithFee = amountIn * (BPS_DENOMINATOR - feeBps)
+      let numerator = amountInWithFee * reserveOut
+      let denominator = reserveIn * BPS_DENOMINATOR + amountInWithFee
+      let amountOut = numerator / denominator
+
+      if (amountOut == 0) then throw("Swap output is zero — input too small")
+      else if (amountOut >= reserveOut) then throw("Insufficient liquidity")
+      else if (amountOut < minAmountOut) then throw("amountOut " + toString(amountOut) + " < minAmountOut " + toString(minAmountOut))
+      else {
+        # Update reserves
+        let newReserveIn = reserveIn + amountIn
+        let newReserveOut = reserveOut - amountOut
+
+        # Invariant check: new k >= old k
+        # We use fraction to avoid overflow: newIn * newOut >= oldIn * oldOut
+        # Rearranged: newIn * newOut - oldIn * oldOut >= 0
+        # Since we use integer math and the fee ensures growth, this should always hold.
+        # But we check anyway as a defense-in-depth measure.
+        let oldK = reserveIn * reserveOut
+        let newK = newReserveIn * newReserveOut
+        if (newK < oldK) then throw("INVARIANT VIOLATION: k decreased")
+        else {
+          let (newRA, newRB) = if (isAToB) then (newReserveIn, newReserveOut) else (newReserveOut, newReserveIn)
+
+          [
+            IntegerEntry(keyReserveA(poolKey), newRA),
+            IntegerEntry(keyReserveB(poolKey), newRB),
+            ScriptTransfer(i.caller, amountOut, strToAssetId(outputAssetStr))
+          ]
+        }
+      }
+    }
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# CALLABLE: emergencyPause / emergencyUnpause
+# ──────────────────────────────────────────────────────────────────────
+# Admin-only emergency controls. Pause prevents all state-changing operations.
+# Existing LP positions remain safe and withdrawable.
+# ──────────────────────────────────────────────────────────────────────
+
+@Callable(i)
+func emergencyPause() = {
+  strict _admin = requireAdmin(i.caller)
+  [BooleanEntry(keyPaused(), true)]
+}
+
+@Callable(i)
+func emergencyUnpause() = {
+  strict _admin = requireAdmin(i.caller)
+  [BooleanEntry(keyPaused(), false)]
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# CALLABLE: setAdmin
+# ──────────────────────────────────────────────────────────────────────
+# Sets the admin address. Can only be called by the dApp account itself
+# (i.e., via a self-invoke or the initial setup).
+# ──────────────────────────────────────────────────────────────────────
+
+@Callable(i)
+func setAdmin(adminAddress: String) = {
+  if (i.caller != this) then throw("Only the dApp account can set admin")
+  else {
+    [StringEntry(keyAdmin(), adminAddress)]
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# CALLABLE: emergencyWithdraw
+# ──────────────────────────────────────────────────────────────────────
+# Allows LP holders to withdraw proportional reserves even when paused.
+# This is the escape hatch for catastrophic scenarios.
+# ──────────────────────────────────────────────────────────────────────
+
+@Callable(i)
+func emergencyWithdraw(poolKey: String) = {
+  if (!getPoolExists(poolKey)) then throw("Pool does not exist")
+  else if (size(i.payments) != 1) then throw("Exactly 1 payment (LP token) required")
+  else {
+    let pmt = i.payments[0]
+    let lpAssetStr = getLpAssetId(poolKey)
+    let lpAssetId = fromBase58String(lpAssetStr)
+
+    if (pmt.assetId != lpAssetId) then throw("Payment must be the pool's LP token")
+    else {
+      let lpBurn = pmt.amount
+      if (lpBurn <= 0) then throw("LP amount must be positive")
+      else {
+        let reserveA = getReserveA(poolKey)
+        let reserveB = getReserveB(poolKey)
+        let lpSupply = getLpSupply(poolKey)
+
+        let amountAOut = fraction(lpBurn, reserveA, lpSupply)
+        let amountBOut = fraction(lpBurn, reserveB, lpSupply)
+
+        let canonA = valueOrErrorMessage(getString(this, keyAssetA(poolKey)), "Pool not found")
+        let canonB = valueOrErrorMessage(getString(this, keyAssetB(poolKey)), "Pool not found")
+
+        [
+          IntegerEntry(keyReserveA(poolKey), reserveA - amountAOut),
+          IntegerEntry(keyReserveB(poolKey), reserveB - amountBOut),
+          IntegerEntry(keyLpSupply(poolKey), lpSupply - lpBurn),
+          Burn(lpAssetId, lpBurn),
+          ScriptTransfer(i.caller, amountAOut, strToAssetId(canonA)),
+          ScriptTransfer(i.caller, amountBOut, strToAssetId(canonB))
+        ]
+      }
+    }
+  }
+}
+
+# ──────────────────────────────────────────────────────────────────────
+# VERIFIER
+# ──────────────────────────────────────────────────────────────────────
+# Standard verifier: only the account owner can sign non-invoke transactions
+# (e.g., SetScript for upgrades, if ever needed).
+# ──────────────────────────────────────────────────────────────────────
+
+@Verifier(tx)
+func verify() = sigVerify(tx.bodyBytes, tx.proofs[0], tx.senderPublicKey)
