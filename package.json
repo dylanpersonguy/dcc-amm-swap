@@ -1,0 +1,23 @@
+{
+  "name": "dcc-amm-swap",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production-grade constant-product AMM for DecentralChain",
+  "workspaces": [
+    "amm-core",
+    "amm-ride",
+    "amm-sdk",
+    "amm-indexer",
+    "amm-web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
