@@ -12,7 +12,12 @@ const {
   libs,
 } = require('@waves/waves-transactions');
 
-const ADMIN_SEED = 'REDACTED_SEED_PHRASE';
+const ADMIN_SEED = process.env.SEED;
+if (!ADMIN_SEED) {
+  console.error('ERROR: Set SEED environment variable');
+  console.error('  SEED="your seed phrase" node scripts/pool-test.js');
+  process.exit(1);
+}
 const NODE = 'https://mainnet-node.decentralchain.io';
 const CHAIN = 63; // '?'
 const DAPP = '3Da7xwRRtXfkA46jaKTYb75Usd2ZNWdY6HX';
