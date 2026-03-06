@@ -40,8 +40,9 @@ export function Header() {
             <path d="M10 20L16 8l6 12H10z" fill="white" fillOpacity="0.9"/>
             <defs>
               <linearGradient id="logo-grad" x1="0" y1="0" x2="32" y2="32">
-                <stop stopColor="#6366f1"/>
-                <stop offset="1" stopColor="#8b5cf6"/>
+                <stop stopColor="#7c5cfc"/>
+                <stop offset="0.5" stopColor="#6d9fff"/>
+                <stop offset="1" stopColor="#5cefd6"/>
               </linearGradient>
             </defs>
           </svg>

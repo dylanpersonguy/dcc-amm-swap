@@ -63,6 +63,10 @@ export function App() {
 
           <footer className="footer">
             <span>DCC AMM v2 — Constant-product AMM on DecentralChain</span>
+            <span className="footer-status">
+              <span className="footer-status-dot" />
+              Operational
+            </span>
           </footer>
         </div>
 
