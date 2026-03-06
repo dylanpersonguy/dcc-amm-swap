@@ -284,7 +284,8 @@ func addLiquidity(
       IntegerEntry(keyLpBalance(pid, lockedLpAddr), minLiquidity),
       IntegerEntry(keyLpBalance(pid, callerAddr), lpMinted),
       IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1),
-      ScriptTransfer(i.caller, lpMinted, lpAssetId)
+      ScriptTransfer(i.caller, lpMinted, lpAssetId),
+      BooleanEntry(keyLpClaimed(pid, callerAddr), true)
     ]
     let withRefund0 = if (refund0 > 0)
       then baseActions :+ ScriptTransfer(i.caller, refund0, getAssetBytes(t0))
@@ -338,14 +339,17 @@ func addLiquidity(
         ScriptTransfer(i.caller, lpMinted, lpAssetId)
       ]
     }
+    # Only update internal balance for legacy pools without LP tokens.
+    # Once LP tokens exist, real tokens are the source of truth.
+    let lpBalUpdate = if (lpAssetIdStr != "") then nil
+      else [IntegerEntry(keyLpBalance(pid, callerAddr), currentLp + lpMinted)]
     let baseActions = [
       IntegerEntry(keyPoolR0(pid), newR0),
       IntegerEntry(keyPoolR1(pid), newR1),
       IntegerEntry(keyPoolLpSupply(pid), newSupply),
       IntegerEntry(keyPoolLastK(pid), newK),
-      IntegerEntry(keyLpBalance(pid, callerAddr), currentLp + lpMinted),
       IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1)
-    ] ++ lpActions
+    ] ++ lpBalUpdate ++ lpActions
     let withRefund0 = if (refund0 > 0)
       then baseActions :+ ScriptTransfer(i.caller, refund0, getAssetBytes(t0))
       else baseActions
@@ -409,16 +413,20 @@ func removeLiquidity(
     if (refundLp > 0) then burnActions :+ ScriptTransfer(i.caller, refundLp, lpAssetIdBytes)
     else burnActions
   } else nil
+  # Only update internal balance for legacy pools (no LP token).
+  # When LP tokens exist, real tokens are the authority — avoids negative balance
+  # for users who acquired LP tokens via transfer rather than addLiquidity.
+  let lpBalActions = if (hasLpToken) then nil
+    else [IntegerEntry(keyLpBalance(pid, callerAddr), userLp - lpAmount)]
   [
     IntegerEntry(keyPoolR0(pid), newR0),
     IntegerEntry(keyPoolR1(pid), newR1),
     IntegerEntry(keyPoolLpSupply(pid), newSupply),
     IntegerEntry(keyPoolLastK(pid), newK),
-    IntegerEntry(keyLpBalance(pid, callerAddr), userLp - lpAmount),
     IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1),
     ScriptTransfer(i.caller, amount0Out, getAssetBytes(t0)),
     ScriptTransfer(i.caller, amount1Out, getAssetBytes(t1))
-  ] ++ lpBurnActions
+  ] ++ lpBalActions ++ lpBurnActions
 }
 @Callable(i)
 func swapExactIn(
@@ -524,12 +532,9 @@ func lockLiquidity(assetA: String, assetB: String, feeBps: Int) = {
   strict chkAmt = must(lpAmount > 0, "E_ZERO_LP: attach LP tokens to lock")
   # Burn LP tokens but do NOT decrease lpSupply or reserves.
   # The burned tokens' share of reserves is permanently locked in the pool.
-  # This means every remaining LP token becomes worth more underlying assets.
-  let callerAddr = i.caller.toString()
-  let currentLp = getLpBalance(pid, callerAddr)
+  # This provides permanent deep liquidity that can never be withdrawn.
   [
     Burn(lpAssetIdBytes, lpAmount),
-    IntegerEntry(keyLpBalance(pid, callerAddr), if (currentLp >= lpAmount) then currentLp - lpAmount else 0),
     IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1)
   ]
 }
@@ -547,11 +552,13 @@ func claimLpTokens(assetA: String, assetB: String, feeBps: Int) = {
   let internalBalance = getLpBalance(pid, callerAddr)
   strict chkHasBal = must(internalBalance > 0, "E_NO_LP_BALANCE: no LP balance to claim")
   let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
-  # Reissue tokens for this user's internal balance and transfer them
+  # Transfer from the dApp's existing LP token balance (issued during legacy upgrade).
+  # No Reissue needed — tokens already sit in the dApp from the initial Issue.
+  # Clear internal balance to prevent confusion.
   [
-    Reissue(lpAssetIdBytes, internalBalance, true),
     ScriptTransfer(i.caller, internalBalance, lpAssetIdBytes),
-    BooleanEntry(claimedKey, true)
+    BooleanEntry(claimedKey, true),
+    IntegerEntry(keyLpBalance(pid, callerAddr), 0)
   ]
 }
 @Callable(i)

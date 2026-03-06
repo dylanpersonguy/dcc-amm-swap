@@ -2,7 +2,7 @@
  * Transaction builder — creates InvokeScript transaction params
  * ready for signing via Signer or direct broadcast.
  *
- * v2: Matches Pool.ride v2 callable signatures exactly.
+ * v3: Matches Pool.ride v3 callable signatures exactly.
  * All amounts are in raw integer units.
  */
 
