@@ -1,12 +1,13 @@
 /**
  * Node client — reads pool state from the DecentralChain node API.
  *
- * Uses the /addresses/data/{address} endpoint to read dApp state entries.
+ * v2: Uses pool:field:poolId state key format.
+ * Reads from /addresses/data/{address} endpoint.
  * No external dependencies beyond fetch (Node 18+).
  */
 
-import { AmmSdkConfig, DataEntry, PoolState } from './types';
-import { DCC_ASSET_ID } from '@dcc-amm/core';
+import { AmmSdkConfig, DataEntry, PoolStateV2 } from './types';
+import { DCC_ASSET_ID, getPoolId } from '@dcc-amm/core';
 
 export class NodeClient {
   private readonly nodeUrl: string;
@@ -16,6 +17,8 @@ export class NodeClient {
     this.nodeUrl = config.nodeUrl.replace(/\/$/, '');
     this.dAppAddress = config.dAppAddress;
   }
+
+  // ─── Low-level data readers ──────────────────────────────────────
 
   /** Fetch a single data entry by key */
   async getDataEntry(key: string): Promise<DataEntry | null> {
@@ -61,67 +64,97 @@ export class NodeClient {
     return entry.value as boolean;
   }
 
-  /** Read full pool state */
-  async getPoolState(poolKey: string): Promise<PoolState | null> {
-    const prefix = `pool_${poolKey}_`;
-    const entries = await this.getDataEntries(`${prefix}.*`);
+  // ─── v2 Pool State Readers ───────────────────────────────────────
+
+  /**
+   * Read full v2 pool state by pool ID.
+   * State keys: pool:exists:<pid>, pool:t0:<pid>, pool:r0:<pid>, etc.
+   */
+  async getPoolState(poolId: string): Promise<PoolStateV2 | null> {
+    const escaped = poolId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = `pool:.*:${escaped}`;
+    const entries = await this.getDataEntries(pattern);
 
     if (entries.length === 0) return null;
 
     const map = new Map<string, DataEntry>();
     for (const e of entries) {
-      const field = e.key.replace(prefix, '');
+      const prefix = 'pool:';
+      const pidStart = e.key.indexOf(poolId);
+      if (pidStart < 0) continue;
+      const field = e.key.slice(prefix.length, pidStart - 1);
       map.set(field, e);
     }
 
     const exists = map.get('exists');
-    if (!exists || exists.value !== true) return null;
+    if (!exists || (exists.value as number) !== 1) return null;
 
     return {
-      poolKey,
-      assetA: (map.get('assetA')?.value as string) ?? DCC_ASSET_ID,
-      assetB: (map.get('assetB')?.value as string) ?? '',
-      reserveA: BigInt((map.get('reserveA')?.value as number) ?? 0),
-      reserveB: BigInt((map.get('reserveB')?.value as number) ?? 0),
-      lpAssetId: (map.get('lpAsset')?.value as string) ?? '',
+      poolId,
+      token0: (map.get('t0')?.value as string) ?? '',
+      token1: (map.get('t1')?.value as string) ?? '',
+      reserve0: BigInt((map.get('r0')?.value as number) ?? 0),
+      reserve1: BigInt((map.get('r1')?.value as number) ?? 0),
       lpSupply: BigInt((map.get('lpSupply')?.value as number) ?? 0),
-      feeBps: BigInt((map.get('feeBps')?.value as number) ?? 30),
-      status: ((map.get('status')?.value as string) ?? 'active') as 'active' | 'paused',
+      feeBps: BigInt((map.get('fee')?.value as number) ?? 30),
+      lastK: BigInt((map.get('lastK')?.value as number) ?? 0),
+      createdAt: (map.get('createdAt')?.value as number) ?? 0,
       exists: true,
+      swapCount: (map.get('swaps')?.value as number) ?? 0,
+      volume0: BigInt((map.get('volume0')?.value as number) ?? 0),
+      volume1: BigInt((map.get('volume1')?.value as number) ?? 0),
+      fees0: BigInt((map.get('fees0')?.value as number) ?? 0),
+      fees1: BigInt((map.get('fees1')?.value as number) ?? 0),
     };
+  }
+
+  /**
+   * Get pool state by token pair + fee tier (auto-derives pool ID).
+   */
+  async getPoolByPair(
+    assetA: string | null,
+    assetB: string | null,
+    feeBps: number = 30
+  ): Promise<PoolStateV2 | null> {
+    const poolId = getPoolId(assetA, assetB, feeBps);
+    return this.getPoolState(poolId);
   }
 
   /** Get total pool count */
   async getPoolCount(): Promise<number> {
-    const val = await this.getInteger('global_poolCount');
+    const val = await this.getInteger('poolCount');
     return val !== null ? Number(val) : 0;
   }
 
-  /** List all pool keys */
-  async listPoolKeys(): Promise<string[]> {
-    const count = await this.getPoolCount();
-    const keys: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const key = await this.getString(`poolIndex_${i}`);
-      if (key) keys.push(key);
-    }
-    return keys;
+  /** Get LP balance for an address in a specific pool */
+  async getLpBalance(poolId: string, address: string): Promise<bigint> {
+    const key = `lp:${poolId}:${address}`;
+    const val = await this.getInteger(key);
+    return val ?? 0n;
   }
 
-  /** List all pools with full state */
-  async listPools(): Promise<PoolState[]> {
-    const keys = await this.listPoolKeys();
-    const pools: PoolState[] = [];
-    for (const key of keys) {
-      const state = await this.getPoolState(key);
+  /**
+   * List all pools by scanning pool:exists:* entries.
+   */
+  async listPools(): Promise<PoolStateV2[]> {
+    const entries = await this.getDataEntries('pool:exists:.*');
+    const pools: PoolStateV2[] = [];
+
+    for (const entry of entries) {
+      if ((entry.value as number) !== 1) continue;
+      const poolId = entry.key.replace('pool:exists:', '');
+      const state = await this.getPoolState(poolId);
       if (state) pools.push(state);
     }
+
     return pools;
   }
 
+  // ─── Global State ────────────────────────────────────────────────
+
   /** Check if protocol is paused */
   async isPaused(): Promise<boolean> {
-    const val = await this.getBoolean('global_paused');
+    const val = await this.getBoolean('paused');
     return val === true;
   }
 
@@ -132,6 +165,16 @@ export class NodeClient {
     const data = (await res.json()) as { height: number };
     return data.height;
   }
+
+  /** Get last block timestamp (ms) */
+  async getLastBlockTimestamp(): Promise<number> {
+    const res = await fetch(`${this.nodeUrl}/blocks/last`);
+    if (!res.ok) throw new Error(`Node API error: ${res.status}`);
+    const data = (await res.json()) as { timestamp: number };
+    return data.timestamp;
+  }
+
+  // ─── Asset / Balance helpers ─────────────────────────────────────
 
   /** Get asset info */
   async getAssetInfo(assetId: string): Promise<{
@@ -153,7 +196,7 @@ export class NodeClient {
     try {
       const res = await fetch(`${this.nodeUrl}/assets/details/${assetId}`);
       if (!res.ok) return null;
-      return await res.json();
+      return await res.json() as { name: string; decimals: number; description: string; quantity: number; scripted: boolean; };
     } catch {
       return null;
     }

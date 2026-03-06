@@ -2,24 +2,22 @@
  * Transaction builder — creates InvokeScript transaction params
  * ready for signing via Signer or direct broadcast.
  *
- * All amounts are in raw integer units. No decimal normalization on-chain.
+ * v2: Matches Pool.ride v2 callable signatures exactly.
+ * All amounts are in raw integer units.
  */
 
 import { DCC_ASSET_ID } from '@dcc-amm/core';
 import {
   AmmSdkConfig,
   InvokeScriptTx,
-  SwapParams,
-  AddLiquidityParams,
-  RemoveLiquidityParams,
-  CreatePoolParams,
+  CreatePoolParamsV2,
+  AddLiquidityParamsV2,
+  RemoveLiquidityParamsV2,
+  SwapExactInParamsV2,
 } from './types';
 
-const DEFAULT_INVOKE_FEE = 900000; // 0.009 DCC (smart account extra fee)
+const DEFAULT_INVOKE_FEE = 900000;
 
-/**
- * Normalize asset ID for payment: DCC → null, otherwise string
- */
 function paymentAssetId(assetId: string | null | undefined): string | null {
   if (!assetId || assetId === DCC_ASSET_ID) return null;
   return assetId;
@@ -34,111 +32,93 @@ export class TxBuilder {
     this.chainId = config.chainId;
   }
 
-  /**
-   * Build a createPool InvokeScript transaction.
-   */
-  buildCreatePool(params: CreatePoolParams): InvokeScriptTx {
+  /** createPool(assetA, assetB, feeBps) — no payments */
+  buildCreatePool(params: CreatePoolParamsV2): InvokeScriptTx {
     return {
       type: 16,
       dApp: this.dAppAddress,
       call: {
         function: 'createPool',
         args: [
-          { type: 'integer', value: Number(params.feeBps) },
+          { type: 'string', value: params.assetA },
+          { type: 'string', value: params.assetB },
+          { type: 'integer', value: params.feeBps },
         ],
       },
-      payment: [
-        {
-          assetId: paymentAssetId(params.assetA),
-          amount: Number(params.amountA),
-        },
-        {
-          assetId: paymentAssetId(params.assetB),
-          amount: Number(params.amountB),
-        },
-      ],
+      payment: [],
       fee: DEFAULT_INVOKE_FEE,
       chainId: this.chainId,
     };
   }
 
-  /**
-   * Build an addLiquidity InvokeScript transaction.
-   */
-  buildAddLiquidity(params: AddLiquidityParams): InvokeScriptTx {
+  /** addLiquidity(assetA, assetB, feeBps, aDesired, bDesired, aMin, bMin, deadline) */
+  buildAddLiquidity(params: AddLiquidityParamsV2): InvokeScriptTx {
     return {
       type: 16,
       dApp: this.dAppAddress,
       call: {
         function: 'addLiquidity',
         args: [
-          { type: 'string', value: params.poolKey },
-          { type: 'integer', value: Number(params.minLpOut) },
+          { type: 'string', value: params.assetA },
+          { type: 'string', value: params.assetB },
+          { type: 'integer', value: params.feeBps },
+          { type: 'integer', value: Number(params.amountADesired) },
+          { type: 'integer', value: Number(params.amountBDesired) },
+          { type: 'integer', value: Number(params.amountAMin) },
+          { type: 'integer', value: Number(params.amountBMin) },
           { type: 'integer', value: params.deadline },
         ],
       },
       payment: [
-        {
-          assetId: paymentAssetId(params.assetA),
-          amount: Number(params.amountA),
-        },
-        {
-          assetId: paymentAssetId(params.assetB),
-          amount: Number(params.amountB),
-        },
+        { assetId: paymentAssetId(params.assetA), amount: Number(params.amountADesired) },
+        { assetId: paymentAssetId(params.assetB), amount: Number(params.amountBDesired) },
       ],
       fee: DEFAULT_INVOKE_FEE,
       chainId: this.chainId,
     };
   }
 
-  /**
-   * Build a removeLiquidity InvokeScript transaction.
-   */
-  buildRemoveLiquidity(params: RemoveLiquidityParams): InvokeScriptTx {
+  /** removeLiquidity(assetA, assetB, feeBps, lpAmount, aMin, bMin, deadline) — no payments */
+  buildRemoveLiquidity(params: RemoveLiquidityParamsV2): InvokeScriptTx {
     return {
       type: 16,
       dApp: this.dAppAddress,
       call: {
         function: 'removeLiquidity',
         args: [
-          { type: 'string', value: params.poolKey },
-          { type: 'integer', value: Number(params.minAOut) },
-          { type: 'integer', value: Number(params.minBOut) },
+          { type: 'string', value: params.assetA },
+          { type: 'string', value: params.assetB },
+          { type: 'integer', value: params.feeBps },
+          { type: 'integer', value: Number(params.lpAmount) },
+          { type: 'integer', value: Number(params.amountAMin) },
+          { type: 'integer', value: Number(params.amountBMin) },
           { type: 'integer', value: params.deadline },
         ],
       },
-      payment: [
-        {
-          assetId: params.lpAssetId,
-          amount: Number(params.lpAmount),
-        },
-      ],
+      payment: [],
       fee: DEFAULT_INVOKE_FEE,
       chainId: this.chainId,
     };
   }
 
-  /**
-   * Build a swapExactIn InvokeScript transaction.
-   */
-  buildSwapExactIn(params: SwapParams): InvokeScriptTx {
+  /** swapExactIn(assetIn, assetOut, feeBps, amountIn, minAmountOut, deadline) */
+  buildSwapExactIn(params: SwapExactInParamsV2): InvokeScriptTx {
     return {
       type: 16,
       dApp: this.dAppAddress,
       call: {
         function: 'swapExactIn',
         args: [
-          { type: 'string', value: params.poolKey },
+          { type: 'string', value: params.assetIn },
+          { type: 'string', value: params.assetOut },
+          { type: 'integer', value: params.feeBps },
+          { type: 'integer', value: Number(params.amountIn) },
           { type: 'integer', value: Number(params.minAmountOut) },
           { type: 'integer', value: params.deadline },
         ],
       },
       payment: [
-        {
-          assetId: paymentAssetId(params.inputAssetId),
-          amount: Number(params.amountIn),
-        },
+        { assetId: paymentAssetId(params.assetIn), amount: Number(params.amountIn) },
       ],
       fee: DEFAULT_INVOKE_FEE,
       chainId: this.chainId,

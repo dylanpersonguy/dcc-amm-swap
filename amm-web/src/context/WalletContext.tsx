@@ -1,10 +1,13 @@
 /**
- * Wallet context — manages connection to DecentralChain via Signer + Cubensis Connect.
+ * Wallet context — manages connection via built-in seed signer.
  *
- * Provides wallet state and sign/broadcast capabilities to all components.
+ * Uses @waves/waves-transactions for address derivation, signing, and broadcasting.
+ * Modal-based connect flow (no browser prompt()).
  */
 
 import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import { invokeScript, broadcast, waitForTx, libs } from '@waves/waves-transactions';
+import { config } from '../config';
 
 interface WalletState {
   address: string | null;
@@ -12,10 +15,14 @@ interface WalletState {
   isConnected: boolean;
   isConnecting: boolean;
   error: string | null;
+  seed: string | null;
+  connectModalOpen: boolean;
 }
 
-interface WalletContextValue extends WalletState {
-  connect: () => Promise<void>;
+interface WalletContextValue extends Omit<WalletState, 'seed'> {
+  openConnectModal: () => void;
+  closeConnectModal: () => void;
+  connectWithSeed: (seed: string) => Promise<void>;
   disconnect: () => void;
   signAndBroadcast: (tx: unknown) => Promise<string>;
 }
@@ -35,33 +42,40 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     isConnected: false,
     isConnecting: false,
     error: null,
+    seed: null,
+    connectModalOpen: false,
   });
 
-  const connect = useCallback(async () => {
+  const openConnectModal = useCallback(() => {
+    setState((s) => ({ ...s, connectModalOpen: true, error: null }));
+  }, []);
+
+  const closeConnectModal = useCallback(() => {
+    setState((s) => ({ ...s, connectModalOpen: false, error: null, isConnecting: false }));
+  }, []);
+
+  const connectWithSeed = useCallback(async (seedInput: string) => {
     setState((s) => ({ ...s, isConnecting: true, error: null }));
 
     try {
-      // In production, this would use:
-      // import { Signer } from '@decentralchain/signer';
-      // import { ProviderCubensisConnect } from '@cubensis-connect/provider';
-      //
-      // const signer = new Signer({ NODE_URL: config.nodeUrl });
-      // signer.setProvider(new ProviderCubensisConnect());
-      // const user = await signer.login();
-      //
-      // For now, simulate a wallet connection:
-      const mockAddress = '3P' + 'x'.repeat(33);
-      const mockPubKey = 'pubkey_mock';
+      const seed = seedInput.trim();
+      if (!seed) {
+        setState((s) => ({ ...s, isConnecting: false, error: 'No seed provided' }));
+        return;
+      }
 
-      // Store signer instance globally for tx signing
-      (window as any).__dccSigner = null; // Would be real signer
+      const chainId = config.chainId;
+      const address = libs.crypto.address(seed, chainId);
+      const publicKey = libs.crypto.publicKey(seed);
 
       setState({
-        address: mockAddress,
-        publicKey: mockPubKey,
+        address,
+        publicKey,
         isConnected: true,
         isConnecting: false,
         error: null,
+        seed,
+        connectModalOpen: false,
       });
     } catch (err) {
       setState((s) => ({
@@ -73,37 +87,83 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const disconnect = useCallback(() => {
-    (window as any).__dccSigner = null;
     setState({
       address: null,
       publicKey: null,
       isConnected: false,
       isConnecting: false,
       error: null,
+      seed: null,
+      connectModalOpen: false,
     });
   }, []);
 
   const signAndBroadcast = useCallback(
     async (tx: unknown): Promise<string> => {
-      if (!state.isConnected) {
+      if (!state.isConnected || !state.seed) {
         throw new Error('Wallet not connected');
       }
 
-      // In production:
-      // const signer = (window as any).__dccSigner as Signer;
-      // const [result] = await signer.invoke(tx).broadcast();
-      // return result.id;
+      // Guard: dApp cannot invoke itself
+      if (state.address === config.dAppAddress) {
+        throw new Error(
+          'Cannot transact from the dApp account — the dApp cannot invoke itself. ' +
+          'Please connect with a different wallet seed.'
+        );
+      }
 
-      // Mock: return a fake tx ID
-      console.log('[Wallet] Sign and broadcast:', tx);
-      return 'mock_tx_' + Date.now().toString(36);
+      const txParams = tx as any;
+      const chainId = config.chainId.charCodeAt(0);
+
+      const signedTx = invokeScript(
+        {
+          dApp: txParams.dApp,
+          call: txParams.call,
+          payment: (txParams.payment || []).map((p: any) => ({
+            assetId: p.assetId || null,
+            amount: p.amount,
+          })),
+          fee: txParams.fee || 500000,
+          chainId,
+        },
+        state.seed
+      );
+
+      console.log('[Wallet] Broadcasting tx:', signedTx.id);
+      console.log('[Wallet] TX details:', JSON.stringify(signedTx, null, 2));
+
+      try {
+        await broadcast(signedTx, config.nodeUrl);
+      } catch (broadcastErr: any) {
+        const msg = broadcastErr?.message || broadcastErr?.data?.message || JSON.stringify(broadcastErr);
+        console.error('[Wallet] Broadcast failed:', msg);
+        throw new Error(msg);
+      }
+      console.log('[Wallet] Broadcast OK, waiting for confirmation...');
+
+      await waitForTx(signedTx.id!, {
+        apiBase: config.nodeUrl,
+        timeout: 120000,
+      });
+      console.log('[Wallet] Transaction confirmed:', signedTx.id);
+
+      return signedTx.id!;
     },
-    [state.isConnected]
+    [state.isConnected, state.seed]
   );
+
+  const { seed: _seed, ...publicState } = state;
 
   return (
     <WalletContext.Provider
-      value={{ ...state, connect, disconnect, signAndBroadcast }}
+      value={{
+        ...publicState,
+        openConnectModal,
+        closeConnectModal,
+        connectWithSeed,
+        disconnect,
+        signAndBroadcast,
+      }}
     >
       {children}
     </WalletContext.Provider>

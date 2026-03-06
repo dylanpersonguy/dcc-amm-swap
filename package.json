@@ -8,7 +8,8 @@
     "amm-ride",
     "amm-sdk",
     "amm-indexer",
-    "amm-web"
+    "amm-web",
+    "amm-bot"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
@@ -19,5 +20,9 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "@decentralchain/waves-transactions": "^4.2.6",
+    "@waves/waves-transactions": "^4.3.11"
+  }
 }

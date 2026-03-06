@@ -1,0 +1,28 @@
+{
+  "name": "@dcc-amm/bot",
+  "version": "1.0.0",
+  "description": "Telegram trading bot for DCC AMM — Trojan-style swap bot for DecentralChain",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@dcc-amm/sdk": "1.0.0",
+    "@dcc-amm/core": "1.0.0",
+    "@waves/waves-transactions": "^4.3.11",
+    "grammy": "^1.21.0",
+    "better-sqlite3": "^11.0.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "@types/better-sqlite3": "^7.6.8",
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0"
+  },
+  "license": "MIT"
+}

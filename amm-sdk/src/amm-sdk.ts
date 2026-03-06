@@ -1,8 +1,8 @@
 /**
- * DCC AMM SDK — Main entry point.
+ * DCC AMM SDK — Main entry point (v2).
  *
  * Combines node client, quote engine, and transaction builder into
- * a unified, ergonomic API for interacting with the AMM protocol.
+ * a unified, ergonomic API for interacting with the AMM v2 protocol.
  */
 
 import { NodeClient } from './node-client';
@@ -18,14 +18,16 @@ import {
 import { toRawAmount, fromRawAmount, formatAmount } from './amounts';
 import {
   AmmSdkConfig,
-  PoolState,
-  SwapQuote,
+  PoolStateV2,
+  SwapQuoteV2,
   InvokeScriptTx,
 } from './types';
 import {
-  getPoolKey,
+  getPoolId,
   getMinAmountOut,
+  normalizeAssetId,
   DCC_ASSET_ID,
+  DEFAULT_FEE_BPS,
 } from '@dcc-amm/core';
 
 export class AmmSdk {
@@ -41,28 +43,33 @@ export class AmmSdk {
 
   // ─── Pool Discovery ──────────────────────────────────────────────
 
-  /** Get pool state by pool key */
-  async getPool(poolKey: string): Promise<PoolState | null> {
-    return this.node.getPoolState(poolKey);
+  /** Get pool state by pool ID (e.g., "p:DCC:3PAbcd:30") */
+  async getPool(poolId: string): Promise<PoolStateV2 | null> {
+    return this.node.getPoolState(poolId);
   }
 
-  /** Get pool state by token pair (auto-derives pool key) */
+  /** Get pool state by token pair + fee tier */
   async getPoolByPair(
     assetA: string | null,
-    assetB: string | null
-  ): Promise<PoolState | null> {
-    const poolKey = getPoolKey(assetA, assetB);
-    return this.node.getPoolState(poolKey);
+    assetB: string | null,
+    feeBps: number = 30
+  ): Promise<PoolStateV2 | null> {
+    return this.node.getPoolByPair(assetA, assetB, feeBps);
   }
 
   /** List all pools */
-  async listPools(): Promise<PoolState[]> {
+  async listPools(): Promise<PoolStateV2[]> {
     return this.node.listPools();
   }
 
   /** Get pool count */
   async getPoolCount(): Promise<number> {
     return this.node.getPoolCount();
+  }
+
+  /** Get LP balance for an address in a pool */
+  async getLpBalance(poolId: string, address: string): Promise<bigint> {
+    return this.node.getLpBalance(poolId, address);
   }
 
   // ─── Quoting ─────────────────────────────────────────────────────
@@ -72,20 +79,21 @@ export class AmmSdk {
     amountIn: bigint,
     inputAssetId: string | null,
     outputAssetId: string | null,
+    feeBps: number = 30,
     slippageBps: bigint = 50n
-  ): Promise<SwapQuote> {
-    const poolKey = getPoolKey(inputAssetId, outputAssetId);
-    const pool = await this.node.getPoolState(poolKey);
-    if (!pool) throw new Error(`No pool found for ${inputAssetId}/${outputAssetId}`);
-    if (pool.status !== 'active') throw new Error('Pool is not active');
+  ): Promise<SwapQuoteV2> {
+    const poolId = getPoolId(inputAssetId, outputAssetId, feeBps);
+    const pool = await this.node.getPoolState(poolId);
+    if (!pool) throw new Error(`No pool found: ${poolId}`);
+    if (pool.reserve0 === 0n) throw new Error('Pool has no liquidity');
 
     return computeSwapQuote(amountIn, inputAssetId, pool, slippageBps);
   }
 
   /** Get spot price for a pool */
-  async getSpotPrice(poolKey: string) {
-    const pool = await this.node.getPoolState(poolKey);
-    if (!pool) throw new Error(`Pool not found: ${poolKey}`);
+  async getSpotPrice(poolId: string) {
+    const pool = await this.node.getPoolState(poolId);
+    if (!pool) throw new Error(`Pool not found: ${poolId}`);
     return getSpotPrice(pool);
   }
 
@@ -96,22 +104,18 @@ export class AmmSdk {
     amountIn: bigint,
     inputAssetId: string | null,
     outputAssetId: string | null,
+    feeBps: number = 30,
     slippageBps: bigint = 50n,
-    deadlineBlocks: number = 20
-  ): Promise<{ tx: InvokeScriptTx; quote: SwapQuote }> {
-    const quote = await this.quoteSwap(
-      amountIn,
-      inputAssetId,
-      outputAssetId,
-      slippageBps
-    );
+    deadlineMs: number = 0
+  ): Promise<{ tx: InvokeScriptTx; quote: SwapQuoteV2 }> {
+    const quote = await this.quoteSwap(amountIn, inputAssetId, outputAssetId, feeBps, slippageBps);
 
-    const height = await this.node.getHeight();
-    const deadline = height + deadlineBlocks;
+    const deadline = deadlineMs || (Date.now() + 120_000); // 2 min default
 
     const tx = this.tx.buildSwapExactIn({
-      poolKey: quote.poolKey,
-      inputAssetId: inputAssetId ?? DCC_ASSET_ID,
+      assetIn: normalizeAssetId(inputAssetId),
+      assetOut: normalizeAssetId(outputAssetId),
+      feeBps,
       amountIn,
       minAmountOut: quote.minAmountOut,
       deadline,
@@ -126,26 +130,32 @@ export class AmmSdk {
     assetB: string | null,
     amountA: bigint,
     amountB: bigint,
+    feeBps: number = 30,
     slippageBps: bigint = 50n,
-    deadlineBlocks: number = 20
+    deadlineMs: number = 0
   ) {
-    const poolKey = getPoolKey(assetA, assetB);
-    const pool = await this.node.getPoolState(poolKey);
-    if (!pool) throw new Error(`Pool not found: ${poolKey}`);
+    const poolId = getPoolId(assetA, assetB, feeBps);
+    const pool = await this.node.getPoolState(poolId);
+    if (!pool) throw new Error(`Pool not found: ${poolId}`);
 
-    const estimate = estimateAddLiquidity(amountA, amountB, pool);
-    const minLpOut = getMinAmountOut(estimate.lpMinted, slippageBps);
+    // Use initialLiquidity estimate when pool is empty, addLiquidity otherwise
+    const estimate = pool.reserve0 === 0n && pool.reserve1 === 0n && pool.lpSupply === 0n
+      ? { lpMinted: estimateInitialLp(amountA, amountB).lpMinted, actualAmountA: amountA, actualAmountB: amountB, refundA: 0n, refundB: 0n }
+      : estimateAddLiquidity(amountA, amountB, pool);
+    const slippageFactor = 10000n - slippageBps;
+    const amountAMin = (amountA * slippageFactor) / 10000n;
+    const amountBMin = (amountB * slippageFactor) / 10000n;
 
-    const height = await this.node.getHeight();
-    const deadline = height + deadlineBlocks;
+    const deadline = deadlineMs || (Date.now() + 120_000);
 
     const tx = this.tx.buildAddLiquidity({
-      poolKey,
-      assetA,
-      assetB,
-      amountA,
-      amountB,
-      minLpOut,
+      assetA: normalizeAssetId(assetA),
+      assetB: normalizeAssetId(assetB),
+      feeBps,
+      amountADesired: amountA,
+      amountBDesired: amountB,
+      amountAMin,
+      amountBMin,
       deadline,
     });
 
@@ -154,27 +164,31 @@ export class AmmSdk {
 
   /** Build a remove-liquidity transaction */
   async buildRemoveLiquidity(
-    poolKey: string,
+    assetA: string | null,
+    assetB: string | null,
+    feeBps: number = 30,
     lpAmount: bigint,
     slippageBps: bigint = 50n,
-    deadlineBlocks: number = 20
+    deadlineMs: number = 0
   ) {
-    const pool = await this.node.getPoolState(poolKey);
-    if (!pool) throw new Error(`Pool not found: ${poolKey}`);
+    const poolId = getPoolId(assetA, assetB, feeBps);
+    const pool = await this.node.getPoolState(poolId);
+    if (!pool) throw new Error(`Pool not found: ${poolId}`);
 
     const estimate = estimateRemoveLiquidity(lpAmount, pool);
-    const minAOut = getMinAmountOut(estimate.amountA, slippageBps);
-    const minBOut = getMinAmountOut(estimate.amountB, slippageBps);
+    const slippageFactor = 10000n - slippageBps;
+    const amountAMin = (estimate.amountA * slippageFactor) / 10000n;
+    const amountBMin = (estimate.amountB * slippageFactor) / 10000n;
 
-    const height = await this.node.getHeight();
-    const deadline = height + deadlineBlocks;
+    const deadline = deadlineMs || (Date.now() + 120_000);
 
     const tx = this.tx.buildRemoveLiquidity({
-      poolKey,
-      lpAssetId: pool.lpAssetId,
+      assetA: normalizeAssetId(assetA),
+      assetB: normalizeAssetId(assetB),
+      feeBps,
       lpAmount,
-      minAOut,
-      minBOut,
+      amountAMin,
+      amountBMin,
       deadline,
     });
 
@@ -185,36 +199,27 @@ export class AmmSdk {
   buildCreatePool(
     assetA: string | null,
     assetB: string | null,
-    amountA: bigint,
-    amountB: bigint,
-    feeBps: bigint = 30n
+    feeBps: number = 30
   ) {
-    const estimate = estimateInitialLp(amountA, amountB);
-
     const tx = this.tx.buildCreatePool({
-      assetA,
-      assetB,
-      amountA,
-      amountB,
+      assetA: normalizeAssetId(assetA),
+      assetB: normalizeAssetId(assetB),
       feeBps,
     });
 
-    return { tx, estimate };
+    return { tx };
   }
 
   // ─── Utilities ───────────────────────────────────────────────────
 
-  /** Get balance of an asset for an address */
   async getBalance(address: string, assetId: string | null): Promise<bigint> {
     return this.node.getBalance(address, assetId);
   }
 
-  /** Check if protocol is paused */
   async isPaused(): Promise<boolean> {
     return this.node.isPaused();
   }
 
-  /** Get current block height */
   async getHeight(): Promise<number> {
     return this.node.getHeight();
   }

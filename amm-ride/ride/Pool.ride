@@ -1,142 +1,73 @@
-# ══════════════════════════════════════════════════════════════════════
-# DCC AMM Swap — Monolithic Constant-Product AMM dApp
-# ══════════════════════════════════════════════════════════════════════
-#
-# DESIGN CHOICE: (A) Monolithic AMM dApp
-# ──────────────────────────────────────────────────────────────────────
-# This contract manages ALL pools in a single dApp via keyed state entries.
-# Chosen over (B) Factory+per-pair dApps because:
-#  1. RIDE cannot programmatically deploy child contracts
-#  2. Single atomic state — no cross-contract call chains
-#  3. Simpler to audit, test, and reason about
-#  4. Same security model as PuzzleSwap's per-pool dApps but without
-#     the deployment complexity
-#
-# INVARIANTS ENFORCED:
-#  I1. LP supply + reserves track exactly what the contract holds
-#  I2. Reserve updates are atomic (never partial)
-#  I3. k-invariant: after swap, newR0*newR1 >= oldR0*oldR1
-#  I4. LP mint/burn proportionality with floor rounding (favors pool)
-#  I5. First liquidity: LP = floor(sqrt(a*b)) - MIN_LIQUIDITY
-#  I6. Slippage protection on all operations
-#  I7. Deadline enforcement on all user operations
-#  I8. Canonical token ordering; reject same-asset pools
-#  I9. Duplicate pool prevention (poolId is deterministic)
-#  I10. No unsafe call chains — all state changes are atomic action lists
-#
-# Inspired by PuzzleSwap (vlzhr/puzzleswap-contracts) with improvements:
-#  - Simple x*y=k instead of weighted multi-token pools
-#  - Deadline enforcement on all operations
-#  - Slippage protection on add/remove liquidity
-#  - MIN_LIQUIDITY lock to prevent first-depositor inflation attack
-#  - k-invariant post-condition check on every swap
-#  - State-based LP tracking (non-transferable, simpler for v1)
-#  - Analytics counters (volume, fees, swap count)
-#  - Read-only quote function for off-chain pricing
-#  - Pause only blocks swaps+addLiquidity — withdrawals always work
-#
-# VERSION: 2.0.0
-# ══════════════════════════════════════════════════════════════════════
-
-{-# STDLIB_VERSION 6 #-}
+{-# STDLIB_VERSION 5 #-}
 {-# CONTENT_TYPE DAPP #-}
 {-# SCRIPT_TYPE ACCOUNT #-}
-
-# ──────────────────────────────────────────────────────────────────────
-# CONSTANTS
-# ──────────────────────────────────────────────────────────────────────
-
 let VERSION         = 2
-let Scale8          = 100_000_000           # 10^8, standard precision
-let FeeScale        = 10_000                # basis points denominator
-let MIN_FEE_BPS     = 1                     # 0.01%
-let MAX_FEE_BPS     = 1000                  # 10%
-let DEFAULT_FEE_BPS = 30                    # 0.30%
-let MIN_LIQUIDITY   = 1000                  # permanently locked on first deposit
-let DCC_STR         = "DCC"                 # native token representation
-let LOCKED_LP_ADDR  = "LOCKED"              # virtual address for locked LP
-
-# ──────────────────────────────────────────────────────────────────────
-# HELPER FUNCTIONS — Asset conversion (PuzzleSwap pattern)
-# ──────────────────────────────────────────────────────────────────────
-
-# Convert payment assetId (ByteVector|Unit) to canonical string.
-# Native DCC token is Unit in payments → "DCC" in state.
+let Scale8          = 100000000
+let FeeScale        = 10000
+let minFeeBps     = 1
+let maxFeeBps     = 1000
+let defaultFeeBps = 30
+let minLiquidity   = 1000
+let dccStr         = "DCC"
+let lockedLpAddr  = "LOCKED"
 func getAssetString(assetId: ByteVector|Unit) = {
   match assetId {
     case b: ByteVector => b.toBase58String()
-    case _ => DCC_STR
+    case _ => dccStr
   }
 }
-
-# Convert string back to ByteVector|Unit for ScriptTransfer.
 func getAssetBytes(s: String) = {
-  if (s == DCC_STR) then unit else s.fromBase58String()
+  if (s == dccStr) then unit else s.fromBase58String()
 }
-
-# ──────────────────────────────────────────────────────────────────────
-# HELPER FUNCTIONS — Safe state readers (PuzzleSwap pattern)
-# ──────────────────────────────────────────────────────────────────────
-
 func tryGetInteger(key: String) = {
   match getInteger(this, key) {
     case x: Int => x
     case _ => 0
   }
 }
-
 func tryGetString(key: String) = {
   match getString(this, key) {
     case x: String => x
     case _ => ""
   }
 }
-
 func tryGetBoolean(key: String) = {
   match getBoolean(this, key) {
     case x: Boolean => x
     case _ => false
   }
 }
-
-# ──────────────────────────────────────────────────────────────────────
-# CANONICAL ORDERING + POOL ID
-# ──────────────────────────────────────────────────────────────────────
-
-# Sort two asset strings lexicographically.
-# DCC always sorts first (since "DCC" < any base58 string).
+func strLt(a: String, b: String) = {
+  let ab = toBytes(a)
+  let bb = toBytes(b)
+  let ia = toInt(ab, 0)
+  let ib = toInt(bb, 0)
+  if (ia != ib) then ia < ib
+  else {
+    let ia2 = toInt(ab, 8)
+    let ib2 = toInt(bb, 8)
+    ia2 < ib2
+  }
+}
 func canonicalOrder(a: String, b: String) = {
   if (a == b) then throw("E_SAME_ASSET: cannot create pool with identical assets")
-  else if (a == DCC_STR) then (a, b)
-  else if (b == DCC_STR) then (b, a)
-  else if (a < b) then (a, b) else (b, a)
+  else if (a == dccStr) then (a, b)
+  else if (b == dccStr) then (b, a)
+  else if (strLt(a, b)) then (a, b) else (b, a)
 }
-
-# Derive deterministic pool ID: "p:<token0>:<token1>:<feeBps>"
-# Unique per (pair, fee tier). Same pair + different fee = different pool.
 func makePoolId(t0: String, t1: String, feeBps: Int) = {
   "p:" + t0 + ":" + t1 + ":" + feeBps.toString()
 }
-
-# Map user-provided (assetA, assetB, feeBps) to canonical pool ID.
 func resolvePoolId(assetA: String, assetB: String, feeBps: Int) = {
   let (t0, t1) = canonicalOrder(assetA, assetB)
   makePoolId(t0, t1, feeBps)
 }
-
-# ──────────────────────────────────────────────────────────────────────
-# STATE KEY BUILDERS
-# ──────────────────────────────────────────────────────────────────────
-
-# Global keys
 func keyVersion()        = "v"
 func keyAdmin()          = "admin"
 func keyPaused()         = "paused"
 func keyMinLiquidity()   = "minLiquidity"
 func keyFeeBpsDefault()  = "feeBpsDefault"
 func keyPoolCount()      = "poolCount"
-
-# Pool keys
 func keyPoolExists(pid: String) = "pool:exists:" + pid
 func keyPoolT0(pid: String)     = "pool:t0:" + pid
 func keyPoolT1(pid: String)     = "pool:t1:" + pid
@@ -146,22 +77,13 @@ func keyPoolR1(pid: String)     = "pool:r1:" + pid
 func keyPoolLpSupply(pid: String) = "pool:lpSupply:" + pid
 func keyPoolLastK(pid: String)  = "pool:lastK:" + pid
 func keyPoolCreatedAt(pid: String) = "pool:createdAt:" + pid
-
-# LP balance keys
 func keyLpBalance(pid: String, addr: String) = "lp:" + pid + ":" + addr
-
-# Analytics keys (optional, nice-to-have)
 func keyPoolVolume0(pid: String)  = "pool:volume0:" + pid
 func keyPoolVolume1(pid: String)  = "pool:volume1:" + pid
 func keyPoolFees0(pid: String)    = "pool:fees0:" + pid
 func keyPoolFees1(pid: String)    = "pool:fees1:" + pid
 func keyPoolSwaps(pid: String)    = "pool:swaps:" + pid
 func keyPoolLiqEvents(pid: String) = "pool:liquidityEvents:" + pid
-
-# ──────────────────────────────────────────────────────────────────────
-# STATE READERS
-# ──────────────────────────────────────────────────────────────────────
-
 func poolExists(pid: String)   = tryGetInteger(keyPoolExists(pid)) == 1
 func getR0(pid: String)        = tryGetInteger(keyPoolR0(pid))
 func getR1(pid: String)        = tryGetInteger(keyPoolR1(pid))
@@ -172,19 +94,11 @@ func getT1(pid: String)        = tryGetString(keyPoolT1(pid))
 func getLpBalance(pid: String, addr: String) = tryGetInteger(keyLpBalance(pid, addr))
 func isPaused()                = tryGetBoolean(keyPaused())
 func getAdmin()                = tryGetString(keyAdmin())
-
-# ──────────────────────────────────────────────────────────────────────
-# MATH — Integer square root (Newton's method, unrolled for RIDE)
-# ──────────────────────────────────────────────────────────────────────
-
 func isqrt(n: Int) = {
   if (n < 0) then throw("E_SQRT_NEGATIVE")
   else if (n == 0) then 0
   else if (n <= 3) then 1
   else {
-    # Newton's method: x_{n+1} = (x_n + n/x_n) / 2
-    # Converges in ~32 iterations for 64-bit integers.
-    # RIDE has no loops, so we unroll.
     let x0 = n
     let y0 = (x0 + 1) / 2
     let x1  = if (y0 < x0) then y0 else x0
@@ -253,17 +167,9 @@ func isqrt(n: Int) = {
     result
   }
 }
-
-# ──────────────────────────────────────────────────────────────────────
-# VALIDATION HELPERS
-# ──────────────────────────────────────────────────────────────────────
-
 func must(condition: Boolean, err: String) = {
   if (!condition) then throw(err) else true
 }
-
-# Read a specific payment by assetId from the invocation.
-# Returns the attached amount or throws if not found.
 func paymentAmount(payments: List[AttachedPayment], assetStr: String) = {
   let assetBytes = getAssetBytes(assetStr)
   func finder(accum: Int, pmt: AttachedPayment) = {
@@ -273,69 +179,38 @@ func paymentAmount(payments: List[AttachedPayment], assetStr: String) = {
   if (result == -1) then throw("E_MISSING_PAYMENT: " + assetStr + " not found in payments")
   else result
 }
-
-# Map user-provided amounts to canonical (token0, token1) order.
 func mapAmountsToTokens(assetA: String, assetB: String, amountA: Int, amountB: Int, t0: String, t1: String) = {
   if (assetA == t0 && assetB == t1) then (amountA, amountB)
   else if (assetA == t1 && assetB == t0) then (amountB, amountA)
   else throw("E_ASSET_MISMATCH: assets don't match pool pair")
 }
-
-# ══════════════════════════════════════════════════════════════════════
-# CALLABLE: createPool
-# ══════════════════════════════════════════════════════════════════════
-# Creates a new pool for a pair of assets.
-# Does NOT accept initial liquidity — use addLiquidity separately.
-# This keeps the interface clean and the first-deposit logic in one place.
-#
-# @param assetA  First asset ID string (or "DCC" for native)
-# @param assetB  Second asset ID string (or "DCC" for native)
-# @param feeBps  Fee in basis points (1-1000)
-# ──────────────────────────────────────────────────────────────────────
-
 @Callable(i)
 func createPool(assetA: String, assetB: String, feeBps: Int) = {
-  # Validate pause
-  strict _np = must(!isPaused(), "E_PAUSED: protocol is paused")
-
-  # Validate inputs
-  strict _diff = must(assetA != assetB, "E_SAME_ASSET: assetA == assetB")
-  strict _feeMin = must(feeBps >= MIN_FEE_BPS, "E_FEE_TOO_LOW: feeBps < " + MIN_FEE_BPS.toString())
-  strict _feeMax = must(feeBps <= MAX_FEE_BPS, "E_FEE_TOO_HIGH: feeBps > " + MAX_FEE_BPS.toString())
-
-  # Validate assets are real (non-empty strings)
-  strict _a = must(assetA.size() > 0, "E_EMPTY_ASSET: assetA is empty")
-  strict _b = must(assetB.size() > 0, "E_EMPTY_ASSET: assetB is empty")
-
-  # Validate assets exist on chain (unless DCC)
-  strict _aExists = if (assetA != DCC_STR) then {
+  strict chkNp = must(!isPaused(), "E_PAUSED: protocol is paused")
+  strict chkDiff = must(assetA != assetB, "E_SAME_ASSET: assetA == assetB")
+  strict chkFeeMin = must(feeBps >= minFeeBps, "E_FEE_TOO_LOW: feeBps < " + minFeeBps.toString())
+  strict chkFeeMax = must(feeBps <= maxFeeBps, "E_FEE_TOO_HIGH: feeBps > " + maxFeeBps.toString())
+  strict chkA = must(assetA.size() > 0, "E_EMPTY_ASSET: assetA is empty")
+  strict chkB = must(assetB.size() > 0, "E_EMPTY_ASSET: assetB is empty")
+  strict chkAExists = if (assetA != dccStr) then {
     match assetInfo(assetA.fromBase58String()) {
       case info: Asset =>
-        # Block scripted/smart assets in v1
         must(!info.scripted, "E_SCRIPTED_ASSET: " + assetA + " is a smart asset")
       case _ => throw("E_ASSET_NOT_FOUND: " + assetA)
     }
   } else true
-
-  strict _bExists = if (assetB != DCC_STR) then {
+  strict chkBExists = if (assetB != dccStr) then {
     match assetInfo(assetB.fromBase58String()) {
       case info: Asset =>
         must(!info.scripted, "E_SCRIPTED_ASSET: " + assetB + " is a smart asset")
       case _ => throw("E_ASSET_NOT_FOUND: " + assetB)
     }
   } else true
-
-  # Canonical order + pool ID
   let (t0, t1) = canonicalOrder(assetA, assetB)
   let pid = makePoolId(t0, t1, feeBps)
-
-  # Duplicate prevention
-  strict _exists = must(!poolExists(pid), "E_POOL_EXISTS: " + pid)
-
+  strict chkExists = must(!poolExists(pid), "E_POOL_EXISTS: " + pid)
   let poolCount = tryGetInteger(keyPoolCount())
-
   [
-    # Pool metadata
     IntegerEntry(keyPoolExists(pid), 1),
     StringEntry(keyPoolT0(pid), t0),
     StringEntry(keyPoolT1(pid), t1),
@@ -345,41 +220,15 @@ func createPool(assetA: String, assetB: String, feeBps: Int) = {
     IntegerEntry(keyPoolLpSupply(pid), 0),
     IntegerEntry(keyPoolLastK(pid), 0),
     IntegerEntry(keyPoolCreatedAt(pid), lastBlock.timestamp),
-
-    # Analytics counters
     IntegerEntry(keyPoolVolume0(pid), 0),
     IntegerEntry(keyPoolVolume1(pid), 0),
     IntegerEntry(keyPoolFees0(pid), 0),
     IntegerEntry(keyPoolFees1(pid), 0),
     IntegerEntry(keyPoolSwaps(pid), 0),
     IntegerEntry(keyPoolLiqEvents(pid), 0),
-
-    # Global counter
     IntegerEntry(keyPoolCount(), poolCount + 1)
   ]
 }
-
-# ══════════════════════════════════════════════════════════════════════
-# CALLABLE: addLiquidity
-# ══════════════════════════════════════════════════════════════════════
-# Adds liquidity to an existing pool.
-#
-# First deposit:  LP = floor(sqrt(amt0 * amt1)) - MIN_LIQUIDITY
-# Subsequent:     LP = min(amt0*supply/r0, amt1*supply/r1)
-#
-# Excess of one token is refunded to maintain the ratio.
-# Payments must include both tokens (attached to the invocation).
-#
-# @param assetA         First asset ID
-# @param assetB         Second asset ID
-# @param feeBps         Fee tier (identifies which pool)
-# @param amountADesired Desired amount of assetA
-# @param amountBDesired Desired amount of assetB
-# @param amountAMin     Minimum acceptable amount of assetA used
-# @param amountBMin     Minimum acceptable amount of assetB used
-# @param deadline       Block timestamp deadline
-# ──────────────────────────────────────────────────────────────────────
-
 @Callable(i)
 func addLiquidity(
   assetA: String, assetB: String, feeBps: Int,
@@ -387,99 +236,68 @@ func addLiquidity(
   amountAMin: Int, amountBMin: Int,
   deadline: Int
 ) = {
-  # Validations
-  strict _np = must(!isPaused(), "E_PAUSED: protocol is paused")
-  strict _dl = must(lastBlock.timestamp <= deadline, "E_DEADLINE: tx expired, now=" + lastBlock.timestamp.toString() + " > deadline=" + deadline.toString())
-  strict _aPos = must(amountADesired > 0, "E_ZERO_AMOUNT: amountADesired must be > 0")
-  strict _bPos = must(amountBDesired > 0, "E_ZERO_AMOUNT: amountBDesired must be > 0")
-
-  # Resolve pool
+  strict chkNp = must(!isPaused(), "E_PAUSED: protocol is paused")
+  strict chkDl = must(lastBlock.timestamp <= deadline, "E_DEADLINE: tx expired, now=" + lastBlock.timestamp.toString() + " > deadline=" + deadline.toString())
+  strict chkAPos = must(amountADesired > 0, "E_ZERO_AMOUNT: amountADesired must be > 0")
+  strict chkBPos = must(amountBDesired > 0, "E_ZERO_AMOUNT: amountBDesired must be > 0")
   let (t0, t1) = canonicalOrder(assetA, assetB)
   let pid = makePoolId(t0, t1, feeBps)
-  strict _ex = must(poolExists(pid), "E_NO_POOL: " + pid)
-
-  # Map user amounts to canonical order
+  strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
   let (desired0, desired1) = mapAmountsToTokens(assetA, assetB, amountADesired, amountBDesired, t0, t1)
   let (min0, min1) = mapAmountsToTokens(assetA, assetB, amountAMin, amountBMin, t0, t1)
-
-  # Validate payments contain both assets with sufficient amounts
   let pay0 = paymentAmount(i.payments, t0)
   let pay1 = paymentAmount(i.payments, t1)
-  strict _pay0 = must(pay0 >= desired0, "E_INSUFFICIENT_PAYMENT: " + t0 + " attached=" + pay0.toString() + " < desired=" + desired0.toString())
-  strict _pay1 = must(pay1 >= desired1, "E_INSUFFICIENT_PAYMENT: " + t1 + " attached=" + pay1.toString() + " < desired=" + desired1.toString())
-
+  strict chkPay0 = must(pay0 >= desired0, "E_INSUFFICIENT_PAYMENT: " + t0 + " attached=" + pay0.toString() + " < desired=" + desired0.toString())
+  strict chkPay1 = must(pay1 >= desired1, "E_INSUFFICIENT_PAYMENT: " + t1 + " attached=" + pay1.toString() + " < desired=" + desired1.toString())
   let res0 = getR0(pid)
   let res1 = getR1(pid)
   let supply = getLpSupply(pid)
   let callerAddr = i.caller.toString()
-
   if (res0 == 0 && res1 == 0 && supply == 0) then {
-    # ── FIRST DEPOSIT ──
-    # LP = floor(sqrt(desired0 * desired1)) - MIN_LIQUIDITY
     let sqrtK = isqrt(desired0 * desired1)
-    strict _liq = must(sqrtK > MIN_LIQUIDITY, "E_INSUFFICIENT_LIQUIDITY: sqrt(a*b)=" + sqrtK.toString() + " <= " + MIN_LIQUIDITY.toString())
-
-    let lpMinted = sqrtK - MIN_LIQUIDITY
+    strict chkLiq = must(sqrtK > minLiquidity, "E_INSUFFICIENT_LIQUIDITY: sqrt(a*b)=" + sqrtK.toString() + " <= " + minLiquidity.toString())
+    let lpMinted = sqrtK - minLiquidity
     let newK = desired0 * desired1
-
-    # Refund any excess payment beyond desired
     let refund0 = pay0 - desired0
     let refund1 = pay1 - desired1
-
     let baseActions = [
       IntegerEntry(keyPoolR0(pid), desired0),
       IntegerEntry(keyPoolR1(pid), desired1),
       IntegerEntry(keyPoolLpSupply(pid), sqrtK),
       IntegerEntry(keyPoolLastK(pid), newK),
-      IntegerEntry(keyLpBalance(pid, LOCKED_LP_ADDR), MIN_LIQUIDITY),
+      IntegerEntry(keyLpBalance(pid, lockedLpAddr), minLiquidity),
       IntegerEntry(keyLpBalance(pid, callerAddr), lpMinted),
       IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1)
     ]
-
     let withRefund0 = if (refund0 > 0)
       then baseActions :+ ScriptTransfer(i.caller, refund0, getAssetBytes(t0))
       else baseActions
     let withRefund1 = if (refund1 > 0)
       then withRefund0 :+ ScriptTransfer(i.caller, refund1, getAssetBytes(t1))
       else withRefund0
-
     withRefund1
   } else {
-    # ── SUBSEQUENT DEPOSIT ──
-    # Determine optimal amounts to maintain ratio.
-    # Try using all of desired0, compute optimal desired1:
     let b1Optimal = fraction(desired0, res1, res0)
-
     let (used0, used1) = if (b1Optimal <= desired1) then {
-      # desired0 fully used, b1Optimal of token1
       (desired0, b1Optimal)
     } else {
-      # desired1 fully used, compute optimal desired0
       let a0Optimal = fraction(desired1, res0, res1)
       (a0Optimal, desired1)
     }
-
-    # Enforce minimums
-    strict _min0 = must(used0 >= min0, "E_SLIPPAGE_0: used=" + used0.toString() + " < min=" + min0.toString())
-    strict _min1 = must(used1 >= min1, "E_SLIPPAGE_1: used=" + used1.toString() + " < min=" + min1.toString())
-    strict _used = must(used0 > 0 && used1 > 0, "E_ZERO_USED: computed amounts are zero")
-
-    # LP minted = min(used0 * supply / res0, used1 * supply / res1) — floor division
+    strict chkMin0 = must(used0 >= min0, "E_SLIPPAGE_0: used=" + used0.toString() + " < min=" + min0.toString())
+    strict chkMin1 = must(used1 >= min1, "E_SLIPPAGE_1: used=" + used1.toString() + " < min=" + min1.toString())
+    strict chkUsed = must(used0 > 0 && used1 > 0, "E_ZERO_USED: computed amounts are zero")
     let lp0 = fraction(used0, supply, res0)
     let lp1 = fraction(used1, supply, res1)
     let lpMinted = if (lp0 < lp1) then lp0 else lp1
-    strict _lpPos = must(lpMinted > 0, "E_DUST: deposit too small to mint LP")
-
+    strict chkLpPos = must(lpMinted > 0, "E_DUST: deposit too small to mint LP")
     let newR0 = res0 + used0
     let newR1 = res1 + used1
     let newSupply = supply + lpMinted
     let newK = newR0 * newR1
     let currentLp = getLpBalance(pid, callerAddr)
-
-    # Refund excess
     let refund0 = pay0 - used0
     let refund1 = pay1 - used1
-
     let baseActions = [
       IntegerEntry(keyPoolR0(pid), newR0),
       IntegerEntry(keyPoolR1(pid), newR1),
@@ -488,33 +306,15 @@ func addLiquidity(
       IntegerEntry(keyLpBalance(pid, callerAddr), currentLp + lpMinted),
       IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1)
     ]
-
     let withRefund0 = if (refund0 > 0)
       then baseActions :+ ScriptTransfer(i.caller, refund0, getAssetBytes(t0))
       else baseActions
     let withRefund1 = if (refund1 > 0)
       then withRefund0 :+ ScriptTransfer(i.caller, refund1, getAssetBytes(t1))
       else withRefund0
-
     withRefund1
   }
 }
-
-# ══════════════════════════════════════════════════════════════════════
-# CALLABLE: removeLiquidity
-# ══════════════════════════════════════════════════════════════════════
-# Burns LP tokens (from caller's state balance) and returns proportional
-# share of reserves. Withdrawals work even when paused.
-#
-# @param assetA    First asset ID
-# @param assetB    Second asset ID
-# @param feeBps    Fee tier
-# @param lpAmount  Amount of LP to burn
-# @param amountAMin  Minimum token A to receive
-# @param amountBMin  Minimum token B to receive
-# @param deadline  Block timestamp deadline
-# ──────────────────────────────────────────────────────────────────────
-
 @Callable(i)
 func removeLiquidity(
   assetA: String, assetB: String, feeBps: Int,
@@ -522,48 +322,29 @@ func removeLiquidity(
   amountAMin: Int, amountBMin: Int,
   deadline: Int
 ) = {
-  # NOTE: no pause check — withdrawals are ALWAYS allowed (escape hatch)
-  strict _dl = must(lastBlock.timestamp <= deadline, "E_DEADLINE: tx expired")
-  strict _lpPos = must(lpAmount > 0, "E_ZERO_LP: lpAmount must be > 0")
-
-  # Resolve pool
+  strict chkDl = must(lastBlock.timestamp <= deadline, "E_DEADLINE: tx expired")
+  strict chkLpPos = must(lpAmount > 0, "E_ZERO_LP: lpAmount must be > 0")
   let (t0, t1) = canonicalOrder(assetA, assetB)
   let pid = makePoolId(t0, t1, feeBps)
-  strict _ex = must(poolExists(pid), "E_NO_POOL: " + pid)
-
+  strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
   let callerAddr = i.caller.toString()
   let userLp = getLpBalance(pid, callerAddr)
-  strict _bal = must(userLp >= lpAmount, "E_INSUFFICIENT_LP: have=" + userLp.toString() + " need=" + lpAmount.toString())
-
+  strict chkBal = must(userLp >= lpAmount, "E_INSUFFICIENT_LP: have=" + userLp.toString() + " need=" + lpAmount.toString())
   let res0 = getR0(pid)
   let res1 = getR1(pid)
   let supply = getLpSupply(pid)
-
-  # Proportional withdrawal — floor rounding (favors pool)
   let amount0Out = fraction(lpAmount, res0, supply)
   let amount1Out = fraction(lpAmount, res1, supply)
-
-  strict _nonzero = must(amount0Out > 0 || amount1Out > 0, "E_DUST_WITHDRAW: output amounts are zero")
-
-  # Map canonical amounts back to user's assetA/assetB order
+  strict chkNonzero = must(amount0Out > 0 || amount1Out > 0, "E_DUST_WITHDRAW: output amounts are zero")
   let (amtAOut, amtBOut) = mapAmountsToTokens(t0, t1, amount0Out, amount1Out, assetA, assetB)
-  # Wait we need to handle the case where assetA might be t0 or t1. Let me just
-  # enforce slippage against the canonical amounts mapped back.
-  # Actually the user provides amountAMin/amountBMin in their asset order, so we need
-  # to map the canonical outputs to user order for comparison.
   let (userAOut, userBOut) = if (assetA == t0) then (amount0Out, amount1Out) else (amount1Out, amount0Out)
-
-  strict _slipA = must(userAOut >= amountAMin, "E_SLIPPAGE_A: out=" + userAOut.toString() + " < min=" + amountAMin.toString())
-  strict _slipB = must(userBOut >= amountBMin, "E_SLIPPAGE_B: out=" + userBOut.toString() + " < min=" + amountBMin.toString())
-
+  strict chkSlipA = must(userAOut >= amountAMin, "E_SLIPPAGE_A: out=" + userAOut.toString() + " < min=" + amountAMin.toString())
+  strict chkSlipB = must(userBOut >= amountBMin, "E_SLIPPAGE_B: out=" + userBOut.toString() + " < min=" + amountBMin.toString())
   let newR0 = res0 - amount0Out
   let newR1 = res1 - amount1Out
   let newSupply = supply - lpAmount
-
-  strict _resNeg = must(newR0 >= 0 && newR1 >= 0, "E_NEGATIVE_RESERVE: this should never happen")
-
+  strict chkResNeg = must(newR0 >= 0 && newR1 >= 0, "E_NEGATIVE_RESERVE: this should never happen")
   let newK = if (newR0 == 0 || newR1 == 0) then 0 else newR0 * newR1
-
   [
     IntegerEntry(keyPoolR0(pid), newR0),
     IntegerEntry(keyPoolR1(pid), newR1),
@@ -575,160 +356,83 @@ func removeLiquidity(
     ScriptTransfer(i.caller, amount1Out, getAssetBytes(t1))
   ]
 }
-
-# ══════════════════════════════════════════════════════════════════════
-# CALLABLE: swapExactIn
-# ══════════════════════════════════════════════════════════════════════
-# Exact-input swap. Fee is deducted from input. 100% of fee stays in
-# reserves (accrues to LPs).
-#
-# Formula:
-#   amountInWithFee = amountIn * (FeeScale - feeBps)
-#   amountOut = floor(amountInWithFee * resOut / (resIn * FeeScale + amountInWithFee))
-#
-# @param assetIn     Input asset ID
-# @param assetOut    Output asset ID
-# @param feeBps      Fee tier (identifies pool)
-# @param amountIn    Exact input amount
-# @param minAmountOut  Minimum acceptable output
-# @param deadline    Block timestamp deadline
-# ──────────────────────────────────────────────────────────────────────
-
 @Callable(i)
 func swapExactIn(
   assetIn: String, assetOut: String, feeBps: Int,
   amountIn: Int, minAmountOut: Int,
   deadline: Int
 ) = {
-  # Validations
-  strict _np = must(!isPaused(), "E_PAUSED: swaps are paused")
-  strict _dl = must(lastBlock.timestamp <= deadline, "E_DEADLINE: tx expired")
-  strict _amtPos = must(amountIn > 0, "E_ZERO_AMOUNT: amountIn must be > 0")
-  strict _diff = must(assetIn != assetOut, "E_SAME_ASSET: assetIn == assetOut")
-
-  # Resolve pool — the pool exists for this (pair, fee) regardless of user's asset order
+  strict chkNp = must(!isPaused(), "E_PAUSED: swaps are paused")
+  strict chkDl = must(lastBlock.timestamp <= deadline, "E_DEADLINE: tx expired")
+  strict chkAmtPos = must(amountIn > 0, "E_ZERO_AMOUNT: amountIn must be > 0")
+  strict chkDiff = must(assetIn != assetOut, "E_SAME_ASSET: assetIn == assetOut")
   let (t0, t1) = canonicalOrder(assetIn, assetOut)
   let pid = makePoolId(t0, t1, feeBps)
-  strict _ex = must(poolExists(pid), "E_NO_POOL: " + pid)
-
-  # Validate payment matches expected input
+  strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
   let pmtAmount = paymentAmount(i.payments, assetIn)
-  strict _pmt = must(pmtAmount >= amountIn, "E_INSUFFICIENT_PAYMENT: attached=" + pmtAmount.toString() + " < expected=" + amountIn.toString())
-
+  strict chkPmt = must(pmtAmount >= amountIn, "E_INSUFFICIENT_PAYMENT: attached=" + pmtAmount.toString() + " < expected=" + amountIn.toString())
   let res0 = getR0(pid)
   let res1 = getR1(pid)
-
-  # Map to input/output reserves based on direction
   let isInT0 = (assetIn == t0)
   let resIn  = if (isInT0) then res0 else res1
   let resOut = if (isInT0) then res1 else res0
-
-  # Constant-product swap with fee
   let fee = getFeeBps(pid)
   let amountInWithFee = amountIn * (FeeScale - fee)
-  let numerator = amountInWithFee * resOut
   let denominator = resIn * FeeScale + amountInWithFee
-
-  # Prevent division by zero
-  strict _denom = must(denominator > 0, "E_DIV_ZERO: denominator is zero")
-
-  let amountOut = numerator / denominator
-
-  # Output validations
-  strict _outPos = must(amountOut > 0, "E_ZERO_OUTPUT: input too small")
-  strict _outLiq = must(amountOut < resOut, "E_INSUFFICIENT_LIQUIDITY: amountOut >= resOut")
-  strict _slip = must(amountOut >= minAmountOut, "E_SLIPPAGE: out=" + amountOut.toString() + " < min=" + minAmountOut.toString())
-
-  # Update reserves
+  strict chkDenom = must(denominator > 0, "E_DIV_ZERO: denominator is zero")
+  let amountOut = fraction(amountInWithFee, resOut, denominator)
+  strict chkOutPos = must(amountOut > 0, "E_ZERO_OUTPUT: input too small")
+  strict chkOutLiq = must(amountOut < resOut, "E_INSUFFICIENT_LIQUIDITY: amountOut >= resOut")
+  strict chkSlip = must(amountOut >= minAmountOut, "E_SLIPPAGE: out=" + amountOut.toString() + " < min=" + minAmountOut.toString())
   let newResIn  = resIn + amountIn
   let newResOut = resOut - amountOut
-
-  # k-invariant check (I3): new product must not decrease
   let oldK = resIn * resOut
   let newK = newResIn * newResOut
-  strict _kCheck = must(newK >= oldK, "E_K_DECREASED: CRITICAL invariant violation! oldK=" + oldK.toString() + " newK=" + newK.toString())
-
-  # Map back to canonical reserves
+  strict chkK = must(newK >= oldK, "E_K_DECREASED: CRITICAL invariant violation! oldK=" + oldK.toString() + " newK=" + newK.toString())
   let (newR0, newR1) = if (isInT0) then (newResIn, newResOut) else (newResOut, newResIn)
-
-  # Fee amount for analytics (in input token units)
   let feeAmount = fraction(amountIn, fee, FeeScale)
-
-  # Refund excess payment
   let refund = pmtAmount - amountIn
   let refundAction = if (refund > 0)
     then [ScriptTransfer(i.caller, refund, getAssetBytes(assetIn))]
     else []
-
-  # Analytics updates
   let vol0Delta = if (isInT0) then amountIn else amountOut
   let vol1Delta = if (isInT0) then amountOut else amountIn
   let fee0Delta = if (isInT0) then feeAmount else 0
   let fee1Delta = if (isInT0) then 0 else feeAmount
-
   [
     IntegerEntry(keyPoolR0(pid), newR0),
     IntegerEntry(keyPoolR1(pid), newR1),
     IntegerEntry(keyPoolLastK(pid), newK),
-
-    # Analytics
     IntegerEntry(keyPoolVolume0(pid), tryGetInteger(keyPoolVolume0(pid)) + vol0Delta),
     IntegerEntry(keyPoolVolume1(pid), tryGetInteger(keyPoolVolume1(pid)) + vol1Delta),
     IntegerEntry(keyPoolFees0(pid), tryGetInteger(keyPoolFees0(pid)) + fee0Delta),
     IntegerEntry(keyPoolFees1(pid), tryGetInteger(keyPoolFees1(pid)) + fee1Delta),
     IntegerEntry(keyPoolSwaps(pid), tryGetInteger(keyPoolSwaps(pid)) + 1),
-
-    # Send output to caller
     ScriptTransfer(i.caller, amountOut, getAssetBytes(assetOut))
   ] ++ refundAction
 }
-
-# ══════════════════════════════════════════════════════════════════════
-# CALLABLE: swapReadOnly (from PuzzleSwap pattern)
-# ══════════════════════════════════════════════════════════════════════
-# Computes swap output without executing. Used by SDKs and UIs for
-# price quotes. Returns amountOut as the callable result.
-#
-# No state changes, no payments, no transfer.
-# ──────────────────────────────────────────────────────────────────────
-
 @Callable(i)
 func swapReadOnly(assetIn: String, assetOut: String, feeBps: Int, amountIn: Int) = {
-  strict _diff = must(assetIn != assetOut, "E_SAME_ASSET")
-  strict _amtPos = must(amountIn > 0, "E_ZERO_AMOUNT")
-
+  strict chkDiff = must(assetIn != assetOut, "E_SAME_ASSET")
+  strict chkAmtPos = must(amountIn > 0, "E_ZERO_AMOUNT")
   let (t0, t1) = canonicalOrder(assetIn, assetOut)
   let pid = makePoolId(t0, t1, feeBps)
-  strict _ex = must(poolExists(pid), "E_NO_POOL: " + pid)
-
+  strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
   let res0 = getR0(pid)
   let res1 = getR1(pid)
   let fee = getFeeBps(pid)
-
   let isInT0 = (assetIn == t0)
   let resIn  = if (isInT0) then res0 else res1
   let resOut = if (isInT0) then res1 else res0
-
   let amountInWithFee = amountIn * (FeeScale - fee)
-  let numerator = amountInWithFee * resOut
   let denominator = resIn * FeeScale + amountInWithFee
-  let amountOut = if (denominator > 0) then numerator / denominator else 0
-
+  let amountOut = if (denominator > 0) then fraction(amountInWithFee, resOut, denominator) else 0
   ([], amountOut)
 }
-
-# ══════════════════════════════════════════════════════════════════════
-# CALLABLE: getPoolInfo (read-only)
-# ══════════════════════════════════════════════════════════════════════
-# Returns pool data for a given pool ID as a String tuple.
-# No state changes.
-# ──────────────────────────────────────────────────────────────────────
-
 @Callable(i)
 func getPoolInfo(assetA: String, assetB: String, feeBps: Int) = {
   let (t0, t1) = canonicalOrder(assetA, assetB)
   let pid = makePoolId(t0, t1, feeBps)
-
   if (!poolExists(pid)) then ([], "E_NO_POOL")
   else {
     let info = pid
@@ -740,43 +444,26 @@ func getPoolInfo(assetA: String, assetB: String, feeBps: Int) = {
     ([], info)
   }
 }
-
-# ══════════════════════════════════════════════════════════════════════
-# ADMIN FUNCTIONS (minimal — cannot steal funds)
-# ══════════════════════════════════════════════════════════════════════
-
-# Pause: stops new swaps and addLiquidity.
-# removeLiquidity remains ALWAYS available (escape hatch).
 @Callable(i)
 func pause() = {
-  strict _admin = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  strict chkAdmin = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
   [BooleanEntry(keyPaused(), true)]
 }
-
 @Callable(i)
 func unpause() = {
-  strict _admin = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  strict chkAdmin = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
   [BooleanEntry(keyPaused(), false)]
 }
-
-# Initialize global config — can only be called by the dApp account itself.
 @Callable(i)
 func initialize(adminAddr: String) = {
-  strict _self = must(i.caller == this, "E_NOT_SELF: only dApp account can initialize")
-  strict _notInit = must(tryGetInteger(keyVersion()) == 0, "E_ALREADY_INIT: already initialized")
+  strict chkSelf = must(i.caller == this, "E_NOT_SELF: only dApp account can initialize")
+  strict chkNotInit = must(tryGetInteger(keyVersion()) == 0, "E_ALREADY_INIT: already initialized")
   [
     IntegerEntry(keyVersion(), VERSION),
     StringEntry(keyAdmin(), adminAddr),
-    IntegerEntry(keyMinLiquidity(), MIN_LIQUIDITY),
-    IntegerEntry(keyFeeBpsDefault(), DEFAULT_FEE_BPS)
+    IntegerEntry(keyMinLiquidity(), minLiquidity),
+    IntegerEntry(keyFeeBpsDefault(), defaultFeeBps)
   ]
 }
-
-# ══════════════════════════════════════════════════════════════════════
-# VERIFIER
-# ══════════════════════════════════════════════════════════════════════
-# Only the account owner can sign non-InvokeScript transactions
-# (e.g., SetScript for emergency upgrades).
-
 @Verifier(tx)
 func verify() = sigVerify(tx.bodyBytes, tx.proofs[0], tx.senderPublicKey)

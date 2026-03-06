@@ -1,6 +1,7 @@
 /**
  * Quote engine — computes swap quotes, price impact, and slippage.
  *
+ * v2: Uses PoolStateV2 and pool IDs instead of legacy pool keys.
  * Uses amm-core pure math functions to guarantee parity with on-chain logic.
  */
 
@@ -10,81 +11,81 @@ import {
   getAddLiquidity,
   getRemoveLiquidity,
   getMinAmountOut,
-  getPoolKey,
+  getPoolId,
+  normalizeAssetId,
+  canonicalSort,
   quote as rawQuote,
   DCC_ASSET_ID,
 } from '@dcc-amm/core';
 
-import { PoolState, SwapQuote } from './types';
+import { PoolStateV2, SwapQuoteV2 } from './types';
 
 /**
- * Compute a swap quote for an exact-input swap.
- *
- * @param amountIn - Input amount in raw units
- * @param inputAssetId - Asset being sold
- * @param pool - Current pool state
- * @param slippageBps - Slippage tolerance in basis points
- * @returns Full quote including minAmountOut
+ * Compute a swap quote for an exact-input swap against a v2 pool.
  */
 export function computeSwapQuote(
   amountIn: bigint,
   inputAssetId: string | null,
-  pool: PoolState,
+  pool: PoolStateV2,
   slippageBps: bigint = 50n
-): SwapQuote {
-  const normalizedInput = inputAssetId || DCC_ASSET_ID;
+): SwapQuoteV2 {
+  const normalizedInput = normalizeAssetId(inputAssetId);
 
   let reserveIn: bigint;
   let reserveOut: bigint;
 
-  if (normalizedInput === pool.assetA) {
-    reserveIn = pool.reserveA;
-    reserveOut = pool.reserveB;
-  } else if (normalizedInput === pool.assetB) {
-    reserveIn = pool.reserveB;
-    reserveOut = pool.reserveA;
+  if (normalizedInput === pool.token0) {
+    reserveIn = pool.reserve0;
+    reserveOut = pool.reserve1;
+  } else if (normalizedInput === pool.token1) {
+    reserveIn = pool.reserve1;
+    reserveOut = pool.reserve0;
   } else {
-    throw new Error(`Asset ${normalizedInput} not in pool ${pool.poolKey}`);
+    throw new Error(`Asset ${normalizedInput} not in pool ${pool.poolId}`);
   }
 
   const result = getAmountOut(amountIn, reserveIn, reserveOut, pool.feeBps);
   const minOut = getMinAmountOut(result.amountOut, slippageBps);
 
+  const outputAsset = normalizedInput === pool.token0 ? pool.token1 : pool.token0;
+
   return {
+    poolId: pool.poolId,
+    assetIn: normalizedInput,
+    assetOut: outputAsset,
+    feeBps: Number(pool.feeBps),
     amountIn,
     amountOut: result.amountOut,
     minAmountOut: minOut,
     priceImpactBps: result.priceImpactBps,
     feeAmount: result.feeAmount,
-    route: `${normalizedInput} → ${normalizedInput === pool.assetA ? pool.assetB : pool.assetA}`,
-    poolKey: pool.poolKey,
+    route: `${normalizedInput} -> ${outputAsset}`,
   };
 }
 
 /**
- * Compute a proportional quote for display: how much of B equals amountA at current ratio.
+ * Compute a proportional quote for display.
  */
 export function computeProportionalQuote(
-  amountA: bigint,
-  pool: PoolState
+  amount0: bigint,
+  pool: PoolStateV2
 ): bigint {
-  return rawQuote(amountA, pool.reserveA, pool.reserveB);
+  return rawQuote(amount0, pool.reserve0, pool.reserve1);
 }
 
 /**
- * Compute spot price (A in terms of B).
- * Returns as a floating-point number for display only.
+ * Compute spot price (token0 in terms of token1).
  */
-export function getSpotPrice(pool: PoolState): {
-  priceAtoB: number;
-  priceBtoA: number;
+export function getSpotPrice(pool: PoolStateV2): {
+  price0to1: number;
+  price1to0: number;
 } {
-  if (pool.reserveA === 0n || pool.reserveB === 0n) {
-    return { priceAtoB: 0, priceBtoA: 0 };
+  if (pool.reserve0 === 0n || pool.reserve1 === 0n) {
+    return { price0to1: 0, price1to0: 0 };
   }
-  const priceAtoB = Number(pool.reserveB) / Number(pool.reserveA);
-  const priceBtoA = Number(pool.reserveA) / Number(pool.reserveB);
-  return { priceAtoB, priceBtoA };
+  const price0to1 = Number(pool.reserve1) / Number(pool.reserve0);
+  const price1to0 = Number(pool.reserve0) / Number(pool.reserve1);
+  return { price0to1, price1to0 };
 }
 
 /**
@@ -98,15 +99,15 @@ export function estimateInitialLp(amountA: bigint, amountB: bigint) {
  * Estimate LP tokens for adding liquidity.
  */
 export function estimateAddLiquidity(
-  amountA: bigint,
-  amountB: bigint,
-  pool: PoolState
+  amount0: bigint,
+  amount1: bigint,
+  pool: PoolStateV2
 ) {
   return getAddLiquidity(
-    amountA,
-    amountB,
-    pool.reserveA,
-    pool.reserveB,
+    amount0,
+    amount1,
+    pool.reserve0,
+    pool.reserve1,
     pool.lpSupply
   );
 }
@@ -114,16 +115,13 @@ export function estimateAddLiquidity(
 /**
  * Estimate token amounts returned for removing liquidity.
  */
-export function estimateRemoveLiquidity(lpBurn: bigint, pool: PoolState) {
+export function estimateRemoveLiquidity(lpBurn: bigint, pool: PoolStateV2) {
   return getRemoveLiquidity(
     lpBurn,
-    pool.reserveA,
-    pool.reserveB,
+    pool.reserve0,
+    pool.reserve1,
     pool.lpSupply
   );
 }
 
-/**
- * Compute the pool key for a token pair.
- */
-export { getPoolKey } from '@dcc-amm/core';
+export { getPoolId } from '@dcc-amm/core';

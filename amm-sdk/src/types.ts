@@ -5,19 +5,7 @@
  *     LP is state-tracked (no lpAssetId).
  */
 
-/** Raw pool state as read from the DecentralChain node (v1 — legacy) */
-export interface PoolState {
-  poolKey: string;
-  assetA: string;
-  assetB: string;
-  reserveA: bigint;
-  reserveB: bigint;
-  lpAssetId: string;
-  lpSupply: bigint;
-  feeBps: bigint;
-  status: 'active' | 'paused';
-  exists: boolean;
-}
+// ── v2 Pool State ───────────────────────────────────────────────────
 
 /** v2 pool state — matches Pool.ride v2 state schema */
 export interface PoolStateV2 {
@@ -33,9 +21,9 @@ export interface PoolStateV2 {
   reserve1: bigint;
   /** Total LP supply (state-tracked, not an on-chain asset) */
   lpSupply: bigint;
-  /** Fee in basis points (1–1000) */
+  /** Fee in basis points (1-1000) */
   feeBps: bigint;
-  /** Last k = reserve0 × reserve1 */
+  /** Last k = reserve0 x reserve1 */
   lastK: bigint;
   /** Pool creation timestamp */
   createdAt: number;
@@ -49,61 +37,20 @@ export interface PoolStateV2 {
   fees1: bigint;
 }
 
-/** Summary for display */
-export interface PoolInfo extends PoolState {
-  priceAtoB: number;
-  priceBtoA: number;
-  tvlRaw: { a: bigint; b: bigint };
-}
+// ── v2 Quote Result ─────────────────────────────────────────────────
 
-/** Quote result for a swap */
-export interface SwapQuote {
+/** Quote result for a v2 swap */
+export interface SwapQuoteV2 {
+  poolId: string;
+  assetIn: string;
+  assetOut: string;
+  feeBps: number;
   amountIn: bigint;
   amountOut: bigint;
   minAmountOut: bigint;
   priceImpactBps: bigint;
   feeAmount: bigint;
   route: string;
-  poolKey: string;
-}
-
-/** Parameters for building a swap transaction */
-export interface SwapParams {
-  poolKey: string;
-  inputAssetId: string | null;
-  amountIn: bigint;
-  minAmountOut: bigint;
-  deadline: number;
-}
-
-/** Parameters for building an add-liquidity transaction */
-export interface AddLiquidityParams {
-  poolKey: string;
-  assetA: string | null;
-  assetB: string | null;
-  amountA: bigint;
-  amountB: bigint;
-  minLpOut: bigint;
-  deadline: number;
-}
-
-/** Parameters for building a remove-liquidity transaction */
-export interface RemoveLiquidityParams {
-  poolKey: string;
-  lpAssetId: string;
-  lpAmount: bigint;
-  minAOut: bigint;
-  minBOut: bigint;
-  deadline: number;
-}
-
-/** Parameters for building a create-pool transaction */
-export interface CreatePoolParams {
-  assetA: string | null;
-  assetB: string | null;
-  amountA: bigint;
-  amountB: bigint;
-  feeBps: bigint;
 }
 
 // ── v2 Parameter Types ──────────────────────────────────────────────
@@ -148,12 +95,16 @@ export interface SwapExactInParamsV2 {
   deadline: number;
 }
 
+// ── SDK Configuration ───────────────────────────────────────────────
+
 /** SDK configuration */
 export interface AmmSdkConfig {
   nodeUrl: string;
   dAppAddress: string;
   chainId: string;
 }
+
+// ── Node API Types ──────────────────────────────────────────────────
 
 /** DecentralChain data entry (from node API) */
 export interface DataEntry {
