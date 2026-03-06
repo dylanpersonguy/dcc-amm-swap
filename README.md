@@ -4,7 +4,7 @@
 [![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen)](https://nodejs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
-A production-grade **constant-product Automated Market Maker (AMM)** for [DecentralChain](https://decentralchain.io) — a Waves-derived Layer 1 blockchain. Inspired by Uniswap V2, purpose-built for RIDE smart contracts.
+A production-grade **constant-product Automated Market Maker (AMM)** for [DecentralChain](https://decentralchain.io) — a Waves-derived Layer 1 blockchain. Inspired by Uniswap V2 and [PuzzleSwap](https://github.com/vlzhr/puzzleswap-contracts), purpose-built for RIDE smart contracts.
 
 ---
 
@@ -17,10 +17,14 @@ DCC AMM Swap enables trustless token swaps, liquidity provision, and price disco
 - **Constant-product AMM** — proven x·y = k model with deterministic on-chain math
 - **Integer-only arithmetic** — no floating point anywhere; all division floors in favor of the pool
 - **Single monolithic dApp** — multi-pool keyed state (RIDE cannot deploy contracts programmatically)
-- **LP tokens** — real on-chain issued assets (Issue / Reissue / Burn lifecycle)
+- **Per-pool fee tiers** — 1–1000 bps (0.01%–10%), same pair with different fees = different pools
+- **State-tracked LP** — LP balances stored in dApp state (non-transferable in v2)
 - **Minimum liquidity lock** — 1 000 LP tokens permanently locked to prevent share inflation attacks
-- **Emergency controls** — admin pause/unpause with no ability to alter pool math
-- **Comprehensive test suite** — 89 unit tests covering math, pool keys, swaps, and transaction building
+- **Deadline + slippage** — enforced on all operations (create, add, remove, swap)
+- **Read-only quotes** — `swapReadOnly` callable for off-chain pricing
+- **Analytics counters** — volume, fees, swap count tracked on-chain
+- **Emergency controls** — pause halts swaps + adds; withdrawals always work (escape hatch)
+- **Comprehensive test suite** — 101 unit tests covering math, pool keys, swaps, and transaction building
 
 ---
 
@@ -114,16 +118,19 @@ amountOut = ⌊amountInWithFee × reserveOut / (reserveIn × 10 000 + amountInWi
 | Parameter | Value |
 |-----------|-------|
 | Default fee | 30 bps (0.30%) |
-| Fee range | 10–100 bps |
+| Fee range | 1–1000 bps (0.01%–10%) |
 | Fee recipient | 100% to LPs (retained in reserves) |
+| Fee tiers | Same pair + different fee = different pool |
 
-### LP Token Lifecycle
+### LP Model (v2)
 
-| Action | RIDE Operation |
-|--------|---------------|
-| Pool creation | `Issue` — new asset, supply = √(a×b), minus 1 000 locked |
-| Add liquidity | `Reissue` — proportional to deposit |
-| Remove liquidity | `Burn` — proportional withdrawal |
+| Aspect | Detail |
+|--------|--------|
+| Storage | State entries: `lp:<poolId>:<address>` |
+| First deposit | LP = √(a×b) − 1000 locked |
+| Subsequent | LP = min(amt0·supply/r0, amt1·supply/r1) |
+| Withdrawal | Always allowed (even when paused) |
+| Transferable | No (v2); planned for v3 |
 
 ---
 

@@ -8,6 +8,7 @@ export {
   DCC_ASSET_ID,
   LP_DECIMALS,
   LP_TOKEN_PREFIX,
+  LOCKED_LP_ADDR,
 } from './constants';
 
 export {
@@ -24,6 +25,10 @@ export {
   getPoolKey,
   getSwapDirection,
   poolStateKey,
+  getPoolId,
+  poolStateKeyV2,
+  lpBalanceKey,
+  parsePoolId,
 } from './pool-key';
 
 export {

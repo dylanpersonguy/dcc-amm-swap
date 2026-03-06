@@ -1,152 +1,155 @@
-# DCC AMM Swap — State Model
+# DCC AMM Swap — State Model v2.0
 
 ## 1. Overview
 
 All pool state is stored as data entries on the single AMM dApp account.
-Keys are namespaced by a deterministic pool key to prevent collision.
+Keys are namespaced by a deterministic **pool ID** that includes the fee tier.
 
-## 2. Pool Key Derivation
+**v2 changes**: Pool ID now includes fee basis points. LP is state-tracked
+(no on-chain LP asset). Analytics counters added.
+
+## 2. Pool ID Derivation
 
 ```
-poolKey = canonicalSort(assetA, assetB)
+poolId = "p:" + canonicalSort(assetA, assetB) + ":" + feeBps
 
 canonicalSort(a, b):
-  // DCC native token is represented as "DCC"
   idA = if a == null then "DCC" else toBase58(a)
   idB = if b == null then "DCC" else toBase58(b)
-  if idA < idB then return idA + "_" + idB
-  else return idB + "_" + idA
+  if idA == "DCC" then return (idA, idB)
+  if idB == "DCC" then return (idB, idA)
+  if idA < idB then return (idA, idB)
+  else return (idB, idA)
+
+Example: poolId = "p:DCC:3PAbcd123:30"
 ```
 
 This ensures:
-- poolKey("TokenX", "TokenY") == poolKey("TokenY", "TokenX")
-- DCC always sorts first (lexicographically "DCC" < any base58 asset ID)
-- No two distinct pairs can produce the same key
+- `poolId("X", "Y", 30) == poolId("Y", "X", 30)`
+- DCC always sorts first
+- Same pair + different fee = different pool (fee tiers)
+- No duplicate pools possible
 
 ## 3. Data Entry Schema
-
-All keys are prefixed with `pool_<poolKey>_` for namespacing.
-
-### Pool Metadata
-| Key | Type | Description |
-|---|---|---|
-| `pool_<PK>_assetA` | String | Asset ID of token A (canonical first) |
-| `pool_<PK>_assetB` | String | Asset ID of token B (canonical second) |
-| `pool_<PK>_lpAsset` | String | Asset ID of the LP token for this pool |
-| `pool_<PK>_feeBps` | Integer | Fee in basis points (e.g., 30 = 0.3%) |
-| `pool_<PK>_status` | String | "active" or "paused" |
-
-### Pool Reserves
-| Key | Type | Description |
-|---|---|---|
-| `pool_<PK>_reserveA` | Integer | Reserve of token A (raw units) |
-| `pool_<PK>_reserveB` | Integer | Reserve of token B (raw units) |
-| `pool_<PK>_lpSupply` | Integer | Total LP token supply (tracked redundantly for safety) |
 
 ### Global State
 | Key | Type | Description |
 |---|---|---|
-| `global_paused` | Boolean | Emergency pause flag |
-| `global_admin` | String | Admin address (can only pause/unpause) |
-| `global_poolCount` | Integer | Total number of pools created |
-| `pool_<PK>_exists` | Boolean | Pool existence flag (for O(1) duplicate check) |
+| `v` | Integer | Schema version (2) |
+| `admin` | String | Admin address (pause/unpause only) |
+| `paused` | Boolean | Emergency pause flag |
+| `minLiquidity` | Integer | MIN_LIQUIDITY constant (1000) |
+| `feeBpsDefault` | Integer | Default fee in basis points (30) |
+| `poolCount` | Integer | Total number of pools created |
 
-### Pool Index (for enumeration)
+### Pool State (`<pid>` = pool ID)
 | Key | Type | Description |
 |---|---|---|
-| `poolIndex_<N>` | String | Pool key at index N (0-based) |
+| `pool:exists:<pid>` | Integer | 1 if pool exists |
+| `pool:t0:<pid>` | String | Canonical first token ID |
+| `pool:t1:<pid>` | String | Canonical second token ID |
+| `pool:fee:<pid>` | Integer | Fee in basis points (1–1000) |
+| `pool:r0:<pid>` | Integer | Reserve of token0 (raw units) |
+| `pool:r1:<pid>` | Integer | Reserve of token1 (raw units) |
+| `pool:lpSupply:<pid>` | Integer | Total LP supply |
+| `pool:lastK:<pid>` | Integer | Last k = r0 × r1 |
+| `pool:createdAt:<pid>` | Integer | Block timestamp at creation |
+
+### LP Balance State
+| Key | Type | Description |
+|---|---|---|
+| `lp:<pid>:<address>` | Integer | LP balance of address in pool |
+| `lp:<pid>:LOCKED` | Integer | Permanently locked LP (MIN_LIQUIDITY) |
+
+### Analytics State
+| Key | Type | Description |
+|---|---|---|
+| `pool:volume0:<pid>` | Integer | Cumulative volume of token0 |
+| `pool:volume1:<pid>` | Integer | Cumulative volume of token1 |
+| `pool:fees0:<pid>` | Integer | Cumulative fees in token0 |
+| `pool:fees1:<pid>` | Integer | Cumulative fees in token1 |
+| `pool:swaps:<pid>` | Integer | Total swap count |
+| `pool:liquidityEvents:<pid>` | Integer | Total add/remove events |
 
 ## 4. State Transition Rules
 
-### createPool
+### createPool(assetA, assetB, feeBps)
 ```
-PRE:  pool_<PK>_exists == false (or key doesn't exist)
-POST: pool_<PK>_exists = true
-      pool_<PK>_assetA = canonicalA
-      pool_<PK>_assetB = canonicalB
-      pool_<PK>_reserveA = amountA
-      pool_<PK>_reserveB = amountB
-      pool_<PK>_lpAsset = <newly issued asset ID>
-      pool_<PK>_lpSupply = lpMinted + MINIMUM_LIQUIDITY
-      pool_<PK>_feeBps = feeBps
-      pool_<PK>_status = "active"
-      global_poolCount += 1
-      poolIndex_<N> = PK
-ACTIONS: Issue LP token, Transfer LP tokens to caller (minus MINIMUM_LIQUIDITY)
+PRE:  pool:exists:<pid> != 1
+      feeBps in [1, 1000]
+      assetA != assetB
+POST: pool:exists:<pid>     = 1
+      pool:t0:<pid>         = token0
+      pool:t1:<pid>         = token1
+      pool:fee:<pid>        = feeBps
+      pool:r0:<pid>         = 0
+      pool:r1:<pid>         = 0
+      pool:lpSupply:<pid>   = 0
+      pool:lastK:<pid>      = 0
+      pool:createdAt:<pid>  = lastBlock.timestamp
+      poolCount            += 1
+PAYMENTS: None
 ```
 
-### addLiquidity
+### addLiquidity (first deposit)
 ```
-PRE:  pool_<PK>_exists == true
-      pool_<PK>_status == "active"
-      reserveA > 0 AND reserveB > 0
-POST: pool_<PK>_reserveA += actualAmountA
-      pool_<PK>_reserveB += actualAmountB
-      pool_<PK>_lpSupply += lpMinted
-ACTIONS: Transfer LP tokens to caller, Refund excess tokens if any
+PRE:  pool:exists:<pid> == 1
+      pool:r0:<pid> == 0 AND pool:r1:<pid> == 0
+      sqrt(amt0 * amt1) > MIN_LIQUIDITY
+POST: pool:r0:<pid>     = amt0
+      pool:r1:<pid>     = amt1
+      pool:lpSupply:<pid> = sqrt(amt0 * amt1)
+      pool:lastK:<pid>  = amt0 * amt1
+      lp:<pid>:LOCKED   = MIN_LIQUIDITY
+      lp:<pid>:<caller>  = sqrt(amt0 * amt1) - MIN_LIQUIDITY
+PAYMENTS: token0 + token1 attached
+```
+
+### addLiquidity (subsequent)
+```
+PRE:  pool:exists:<pid> == 1
+      pool:r0:<pid> > 0
+POST: pool:r0:<pid>     += used0
+      pool:r1:<pid>     += used1
+      pool:lpSupply:<pid> += lpMinted
+      lp:<pid>:<caller>  += lpMinted
+      pool:lastK:<pid>  = newR0 * newR1
+      lpMinted = min(used0 * supply / r0, used1 * supply / r1)
+REFUND: excess of one token returned to caller
 ```
 
 ### removeLiquidity
 ```
-PRE:  pool_<PK>_exists == true
-      lpAmount > 0
-      lpAmount <= caller's LP balance (enforced by payment)
-POST: pool_<PK>_reserveA -= amountAOut
-      pool_<PK>_reserveB -= amountBOut
-      pool_<PK>_lpSupply -= lpAmount
-ACTIONS: Burn LP tokens (send to dApp, tracked via supply decrement),
-         Transfer amountAOut of tokenA to caller,
-         Transfer amountBOut of tokenB to caller
+PRE:  lp:<pid>:<caller> >= lpAmount
+POST: pool:r0:<pid>     -= floor(lpAmount * r0 / supply)
+      pool:r1:<pid>     -= floor(lpAmount * r1 / supply)
+      pool:lpSupply:<pid> -= lpAmount
+      lp:<pid>:<caller>  -= lpAmount
+ACTIONS: ScriptTransfer token0, ScriptTransfer token1
+NOTE: Always works even when paused (escape hatch)
 ```
 
 ### swapExactIn
 ```
-PRE:  pool_<PK>_exists == true
-      pool_<PK>_status == "active"
-      amountIn > 0
-      deadline >= height
-POST: pool_<PK>_reserveIn += amountIn
-      pool_<PK>_reserveOut -= amountOut
-      // Invariant: newReserveIn * newReserveOut >= oldReserveIn * oldReserveOut
-ACTIONS: Transfer amountOut of output token to caller
-REVERT IF: amountOut < minAmountOut
+PRE:  pool:exists:<pid> == 1, NOT paused
+      amountOut >= minAmountOut
+      newK >= oldK
+POST: pool:r_in:<pid>  += amountIn
+      pool:r_out:<pid> -= amountOut
+      pool:lastK:<pid> = newR0 * newR1
+      Analytics counters updated
+ACTIONS: ScriptTransfer output token to caller
 ```
 
-## 5. LP Token Lifecycle
+## 5. LP Token Model (v2)
 
-```
-Issue (on createPool):
-  name: "DCC-AMM-LP-<poolKey_short>"
-  decimals: 8
-  quantity: lpMinted + MINIMUM_LIQUIDITY
-  reissuable: true  // needed for addLiquidity minting
+LP tokens are **state-tracked**, NOT on-chain issued assets.
+- LP balances stored as `lp:<pid>:<address>` integer entries
+- Non-transferable in v1 (simplifies security model)
+- MINIMUM_LIQUIDITY (1000) locked as `lp:<pid>:LOCKED` on first deposit
+- All floor rounding favors the pool (against the user)
 
-Reissue (on addLiquidity):
-  quantity: lpMinted (additional)
+## 6. State Size Estimate
 
-Burn (on removeLiquidity):
-  LP tokens received as payment are burned via Burn action
-```
-
-## 6. Atomic State Updates
-
-RIDE callable functions return a list of state changes + actions that
-execute atomically:
-
-```
-[
-  IntegerEntry("pool_<PK>_reserveA", newReserveA),
-  IntegerEntry("pool_<PK>_reserveB", newReserveB),
-  IntegerEntry("pool_<PK>_lpSupply", newLpSupply),
-  Reissue(lpAssetId, lpMinted, true),
-  ScriptTransfer(caller, lpMinted, lpAssetId)
-]
-```
-
-If ANY validation fails, the ENTIRE invoke reverts. No partial state updates.
-
-## 7. State Size Considerations
-
-Per pool: ~10 data entries × ~100 bytes avg = ~1 KB per pool
-1000 pools ≈ 1 MB of state — well within DecentralChain limits.
-Pool index enables enumeration without scanning all keys.
+Per pool: ~20 data entries × ~100 bytes avg = ~2 KB per pool
+1000 pools ≈ 2 MB of state — well within DecentralChain limits.

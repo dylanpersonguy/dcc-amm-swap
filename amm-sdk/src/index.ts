@@ -14,12 +14,17 @@ export {
 export type {
   AmmSdkConfig,
   PoolState,
+  PoolStateV2,
   PoolInfo,
   SwapQuote,
   SwapParams,
   AddLiquidityParams,
   RemoveLiquidityParams,
   CreatePoolParams,
+  CreatePoolParamsV2,
+  AddLiquidityParamsV2,
+  RemoveLiquidityParamsV2,
+  SwapExactInParamsV2,
   InvokeScriptTx,
   DataEntry,
 } from './types';

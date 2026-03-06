@@ -1,11 +1,11 @@
-# DCC AMM Swap — Architecture
+# DCC AMM Swap — Architecture v2.0
 
 ## 1. Overview
 
 DCC AMM Swap is a constant-product (x·y=k) automated market maker protocol
-built natively on DecentralChain. It enables permissionless token swaps,
-liquidity provision, and LP token issuance without reliance on an orderbook
-matcher.
+built natively on DecentralChain. Inspired by [PuzzleSwap](https://github.com/vlzhr/puzzleswap-contracts)
+but with a simpler, safer design: monolithic dApp, state-based LP tracking,
+deadline + slippage on all operations, and per-pool fee tiers.
 
 ## 2. High-Level Architecture
 
@@ -47,14 +47,22 @@ DecentralChain/RIDE constraints:
 - One RIDE dApp account holds ALL pool state.
 - Pools are namespaced by a deterministic **pool key** derived from the
   canonical ordering of the two asset IDs.
-- LP tokens are real on-chain issued assets (one Issue per pool creation).
+- LP tokens are **state-tracked** (not on-chain issued assets in v2).
 - All swap/liquidity operations are `InvokeScript` calls to this single dApp.
 
 ### Benefits
 - Simpler deployment and upgrade model
 - Single address to monitor and audit
-- Deterministic pool discovery (pool key = sorted asset pair)
-- LP tokens are first-class DecentralChain assets (transferable, tradeable)
+- Deterministic pool discovery (pool ID = sorted pair + fee)
+- Per-pool fee tiers (like Uniswap V3, but with x·y=k math)
+- State-based LP prevents token-related attack vectors
+
+### PuzzleSwap Improvements
+- Deadline enforcement on all operations (PuzzleSwap has none)
+- Slippage protection on add/remove liquidity (PuzzleSwap: swap only)
+- MIN_LIQUIDITY lock prevents first-depositor inflation attack
+- k-invariant post-check on every swap
+- Smart/scripted asset blocking
 
 ### Tradeoffs
 - Single dApp state size grows with number of pools (acceptable for v1)
@@ -102,12 +110,13 @@ DecentralChain/RIDE constraints:
 
 All state-changing operations use DecentralChain `InvokeScript` transactions:
 
-| Operation | Callable Function | Payments Attached | Returns |
+| Operation | Callable Function | Payments | Returns |
 |---|---|---|---|
-| Create Pool | `createPool` | tokenA + tokenB amounts | LP tokens via transfer |
-| Add Liquidity | `addLiquidity` | tokenA + tokenB amounts | LP tokens via transfer |
-| Remove Liquidity | `removeLiquidity` | LP tokens | tokenA + tokenB via transfer |
-| Swap | `swapExactIn` | input token amount | output token via transfer |
+| Create Pool | `createPool(assetA, assetB, feeBps)` | none | pool metadata in state |
+| Add Liquidity | `addLiquidity(...)` | token0 + token1 | LP via state + refund |
+| Remove Liquidity | `removeLiquidity(...)` | none | token0 + token1 transfer |
+| Swap | `swapExactIn(...)` | input token | output token transfer |
+| Quote (read-only) | `swapReadOnly(...)` | none | amountOut as result |
 
 ## 6. Invariant
 
@@ -120,23 +129,23 @@ reserveA * reserveB >= k
 Where k can only increase (from fees) or stay constant (from balanced
 liquidity add/remove). k NEVER decreases.
 
-## 7. Fee Model (v1)
+## 7. Fee Model (v2)
 
-- Trade fee: 30 basis points (0.3%) by default, configurable per pool at
-  creation time (10-100 bps range).
+- Trade fee: configurable per pool at creation time (1–1000 bps = 0.01%–10%).
+- Default: 30 bps (0.3%).
 - Fee is deducted from the INPUT amount before computing the swap output.
 - 100% of fees accrue to LP holders via reserve growth.
-- No protocol fee in v1.
-- `amountInWithFee = amountIn * (10000 - feeBps) / 10000`
+- No protocol fee in v2.
+- `amountInWithFee = amountIn * (10000 - feeBps)`
 
-## 8. LP Token Model
+## 8. LP Token Model (v2)
 
-- Each pool has a unique LP token issued as a DecentralChain asset.
-- LP token is issued by the AMM dApp account upon pool creation.
-- LP token supply tracks total liquidity ownership.
+- LP is tracked as state entries: `lp:<poolId>:<address>` = integer balance.
+- Non-transferable in v2 (simplifies security; transferability planned for v3).
 - On first deposit: `lpMinted = sqrt(amountA * amountB) - MINIMUM_LIQUIDITY`
-- Subsequent deposits: `lpMinted = min(amountA * totalLP / reserveA, amountB * totalLP / reserveB)`
-- MINIMUM_LIQUIDITY (1000 units) is permanently locked on first deposit to prevent share price manipulation.
+- Subsequent deposits: `lpMinted = min(amt0 * supply / r0, amt1 * supply / r1)`
+- MINIMUM_LIQUIDITY (1000 units) locked as `lp:<poolId>:LOCKED`
+- Withdrawals are always allowed, even when paused (escape hatch).
 
 ## 9. Security Boundaries
 

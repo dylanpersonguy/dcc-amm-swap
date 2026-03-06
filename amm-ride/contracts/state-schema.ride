@@ -1,30 +1,63 @@
-# ──────────────────────────────────────────────────────────────────────
-# RIDE State Schema Reference
-# ──────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════
+# DCC AMM — State Schema Reference v2.0
+# ══════════════════════════════════════════════════════════════════════
 # This file documents every data entry key the AMM dApp writes.
 # Use this for SDK development, indexer queries, and auditing.
-# ──────────────────────────────────────────────────────────────────────
+#
+# Pool ID format: "p:<token0>:<token1>:<feeBps>"
+#   - token0, token1 are in canonical (lexicographic) order
+#   - "DCC" represents the native token (always sorts first)
+#   - feeBps makes pools unique per fee tier (like Uniswap V3)
+#
+# Example: "p:DCC:3PAbcd123:30" = DCC/3PAbcd123 pool at 0.30% fee
+# ══════════════════════════════════════════════════════════════════════
 
 # ─── Global State ────────────────────────────────────────────────────
 
-global_paused       : Boolean   # Emergency pause flag
-global_admin        : String    # Admin address (pause/unpause only)
-global_poolCount    : Integer   # Total number of pools created
-
-# ─── Pool Index ──────────────────────────────────────────────────────
-
-poolIndex_<N>       : String    # Pool key at index N (0-based)
-                                # N ranges from 0 to global_poolCount - 1
+v                     : Integer   # Schema version (currently 2)
+admin                 : String    # Admin address (pause/unpause only)
+paused                : Boolean   # Emergency pause flag (default: false)
+minLiquidity          : Integer   # MIN_LIQUIDITY constant (1000)
+feeBpsDefault         : Integer   # Default fee in basis points (30)
+poolCount             : Integer   # Total number of pools created
 
 # ─── Per-Pool State ──────────────────────────────────────────────────
-# <PK> = pool key, e.g., "DCC_3PAbcd..."
+# <pid> = pool ID, e.g., "p:DCC:3PAbcd123:30"
 
-pool_<PK>_exists    : Boolean   # Pool existence flag
-pool_<PK>_assetA    : String    # Canonical first asset ID
-pool_<PK>_assetB    : String    # Canonical second asset ID
-pool_<PK>_reserveA  : Integer   # Reserve of token A (raw integer units)
-pool_<PK>_reserveB  : Integer   # Reserve of token B (raw integer units)
-pool_<PK>_lpAsset   : String    # LP token asset ID (base58)
-pool_<PK>_lpSupply  : Integer   # Total LP token supply
-pool_<PK>_feeBps    : Integer   # Fee in basis points (10-100)
-pool_<PK>_status    : String    # "active" or "paused"
+pool:exists:<pid>     : Integer   # 1 if pool exists, absent otherwise
+pool:t0:<pid>         : String    # Canonical first asset ID (token0)
+pool:t1:<pid>         : String    # Canonical second asset ID (token1)
+pool:fee:<pid>        : Integer   # Fee in basis points (1-1000)
+pool:r0:<pid>         : Integer   # Reserve of token0 (raw integer units)
+pool:r1:<pid>         : Integer   # Reserve of token1 (raw integer units)
+pool:lpSupply:<pid>   : Integer   # Total LP supply (state-tracked)
+pool:lastK:<pid>      : Integer   # Last computed k = r0 * r1
+pool:createdAt:<pid>  : Integer   # Block timestamp when pool was created
+
+# ─── LP Balance State ────────────────────────────────────────────────
+# LP is tracked in dApp state, NOT as an on-chain issued asset.
+# <addr> = base58 address string
+
+lp:<pid>:<addr>       : Integer   # LP balance of <addr> in pool <pid>
+lp:<pid>:LOCKED       : Integer   # Permanently locked LP (MIN_LIQUIDITY)
+
+# ─── Analytics ───────────────────────────────────────────────────────
+
+pool:volume0:<pid>    : Integer   # Cumulative volume of token0
+pool:volume1:<pid>    : Integer   # Cumulative volume of token1
+pool:fees0:<pid>      : Integer   # Cumulative fees in token0
+pool:fees1:<pid>      : Integer   # Cumulative fees in token1
+pool:swaps:<pid>      : Integer   # Total swap count
+pool:liquidityEvents:<pid> : Integer # Total add/remove events
+
+# ── Callable Functions ───────────────────────────────────────────────
+# createPool(assetA, assetB, feeBps)
+# addLiquidity(assetA, assetB, feeBps, amtADesired, amtBDesired,
+#              amtAMin, amtBMin, deadline)
+# removeLiquidity(assetA, assetB, feeBps, lpAmount,
+#                 amtAMin, amtBMin, deadline)
+# swapExactIn(assetIn, assetOut, feeBps, amountIn,
+#             minAmountOut, deadline)
+# swapReadOnly(assetIn, assetOut, feeBps, amountIn)
+# getPoolInfo(assetA, assetB, feeBps)
+# pause() / unpause() / initialize(adminAddr)

@@ -4,6 +4,10 @@ import {
   getPoolKey,
   getSwapDirection,
   poolStateKey,
+  getPoolId,
+  poolStateKeyV2,
+  lpBalanceKey,
+  parsePoolId,
 } from '../pool-key';
 
 describe('normalizeAssetId', () => {
@@ -101,5 +105,82 @@ describe('poolStateKey', () => {
     expect(poolStateKey('DCC_3PAbcd', 'reserveA')).toBe(
       'pool_DCC_3PAbcd_reserveA'
     );
+  });
+});
+
+// ── V2 Pool ID Tests ─────────────────────────────────────────────────
+
+describe('getPoolId', () => {
+  it('returns deterministic ID with fee tier', () => {
+    const id1 = getPoolId('TokenA', 'TokenB', 30);
+    const id2 = getPoolId('TokenB', 'TokenA', 30);
+    expect(id1).toBe(id2);
+  });
+
+  it('formats as p:<t0>:<t1>:<feeBps>', () => {
+    expect(getPoolId('BBB', 'AAA', 30)).toBe('p:AAA:BBB:30');
+  });
+
+  it('handles DCC pairs', () => {
+    expect(getPoolId(null, '3PAbcd', 30)).toBe('p:DCC:3PAbcd:30');
+  });
+
+  it('different fees produce different IDs', () => {
+    const id30 = getPoolId('AAA', 'BBB', 30);
+    const id100 = getPoolId('AAA', 'BBB', 100);
+    expect(id30).not.toBe(id100);
+  });
+
+  it('accepts bigint feeBps', () => {
+    expect(getPoolId('AAA', 'BBB', 30n as any)).toBe('p:AAA:BBB:30');
+  });
+});
+
+describe('poolStateKeyV2', () => {
+  it('builds v2 state key', () => {
+    expect(poolStateKeyV2('p:DCC:3PAbcd:30', 'r0')).toBe(
+      'pool:r0:p:DCC:3PAbcd:30'
+    );
+  });
+
+  it('builds exists key', () => {
+    expect(poolStateKeyV2('p:DCC:3PAbcd:30', 'exists')).toBe(
+      'pool:exists:p:DCC:3PAbcd:30'
+    );
+  });
+});
+
+describe('lpBalanceKey', () => {
+  it('builds LP balance key', () => {
+    expect(lpBalanceKey('p:DCC:3PAbcd:30', '3PMuser123')).toBe(
+      'lp:p:DCC:3PAbcd:30:3PMuser123'
+    );
+  });
+
+  it('builds locked LP key', () => {
+    expect(lpBalanceKey('p:DCC:3PAbcd:30', 'LOCKED')).toBe(
+      'lp:p:DCC:3PAbcd:30:LOCKED'
+    );
+  });
+});
+
+describe('parsePoolId', () => {
+  it('parses valid pool ID', () => {
+    const result = parsePoolId('p:DCC:3PAbcd:30');
+    expect(result.token0).toBe('DCC');
+    expect(result.token1).toBe('3PAbcd');
+    expect(result.feeBps).toBe(30);
+  });
+
+  it('parses different fee tiers', () => {
+    expect(parsePoolId('p:AAA:BBB:100').feeBps).toBe(100);
+    expect(parsePoolId('p:AAA:BBB:1').feeBps).toBe(1);
+    expect(parsePoolId('p:AAA:BBB:1000').feeBps).toBe(1000);
+  });
+
+  it('throws on invalid format', () => {
+    expect(() => parsePoolId('invalid')).toThrow('invalid pool ID');
+    expect(() => parsePoolId('x:A:B:30')).toThrow('invalid pool ID');
+    expect(() => parsePoolId('A_B')).toThrow('invalid pool ID');
   });
 });

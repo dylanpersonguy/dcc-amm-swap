@@ -1,9 +1,11 @@
 /**
- * Pool key derivation and canonical token ordering.
+ * Pool key / pool ID derivation and canonical token ordering.
  *
- * The pool key uniquely identifies a pair of assets.
- * It is derived from the canonical (sorted) ordering of the two asset IDs.
- * This ensures that pool(A, B) === pool(B, A) and prevents duplicate pools.
+ * v2 Pool ID format: "p:<token0>:<token1>:<feeBps>"
+ *   - token0, token1 are in canonical (sorted) order
+ *   - feeBps makes pools unique per fee tier
+ *
+ * Legacy v1 pool key format: "tokenA_tokenB" (kept for backward compat)
  */
 
 import { DCC_ASSET_ID } from './constants';
@@ -101,7 +103,78 @@ export function getSwapDirection(
 
 /**
  * Build a state key for a pool data entry.
+ * @deprecated Use poolStateKeyV2 for v2 schema
  */
 export function poolStateKey(poolKey: string, field: string): string {
   return `pool_${poolKey}_${field}`;
+}
+
+// ─── V2 Pool ID (includes feeBps) ────────────────────────────────────
+
+/**
+ * Derive the v2 pool ID: "p:<token0>:<token1>:<feeBps>".
+ *
+ * This matches the RIDE contract's makePoolId/resolvePoolId exactly.
+ * Same pair with different fees = different pools (fee tiers).
+ *
+ * @param assetA - First asset ID
+ * @param assetB - Second asset ID
+ * @param feeBps - Fee in basis points (1–1000)
+ * @returns Pool ID string
+ */
+export function getPoolId(
+  assetA: string | null | undefined,
+  assetB: string | null | undefined,
+  feeBps: number | bigint
+): string {
+  const [t0, t1] = canonicalSort(assetA, assetB);
+  return `p:${t0}:${t1}:${feeBps}`;
+}
+
+/**
+ * Build a v2 state key for a pool data entry.
+ *
+ * v2 format: "pool:<field>:<poolId>"
+ *
+ * @param poolId - The v2 pool ID (e.g., "p:DCC:3PAbcd:30")
+ * @param field - Field name (e.g., "r0", "r1", "lpSupply", "exists")
+ * @returns State key string (e.g., "pool:r0:p:DCC:3PAbcd:30")
+ */
+export function poolStateKeyV2(poolId: string, field: string): string {
+  return `pool:${field}:${poolId}`;
+}
+
+/**
+ * Build a v2 LP balance state key.
+ *
+ * Format: "lp:<poolId>:<address>"
+ *
+ * @param poolId - The v2 pool ID
+ * @param address - User address (base58)
+ * @returns State key string
+ */
+export function lpBalanceKey(poolId: string, address: string): string {
+  return `lp:${poolId}:${address}`;
+}
+
+/**
+ * Parse a v2 pool ID into its components.
+ *
+ * @param poolId - Pool ID string like "p:DCC:3PAbcd:30"
+ * @returns { token0, token1, feeBps } or throws if invalid
+ */
+export function parsePoolId(poolId: string): {
+  token0: string;
+  token1: string;
+  feeBps: number;
+} {
+  const parts = poolId.split(':');
+  if (parts.length !== 4 || parts[0] !== 'p') {
+    throw new Error(`parsePoolId: invalid pool ID "${poolId}"`);
+  }
+  return {
+    token0: parts[1],
+    token1: parts[2],
+    feeBps: parseInt(parts[3], 10),
+  };
 }

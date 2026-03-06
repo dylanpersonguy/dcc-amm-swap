@@ -1,10 +1,11 @@
 {
   "name": "@dcc-amm/ride",
-  "version": "1.0.0",
-  "description": "RIDE smart contracts for DCC AMM protocol",
+  "version": "2.0.0",
+  "description": "RIDE smart contracts for DCC AMM v2 — monolithic constant-product AMM",
   "scripts": {
     "compile": "node scripts/compile.js",
     "deploy": "ts-node scripts/deploy.ts",
+    "smoke-test": "ts-node scripts/smoke-test.ts",
     "test": "jest --verbose"
   },
   "devDependencies": {

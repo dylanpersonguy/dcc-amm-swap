@@ -14,11 +14,11 @@ export const BPS_DENOMINATOR = 10000n;
 /** Default fee in basis points (30 = 0.3%) */
 export const DEFAULT_FEE_BPS = 30n;
 
-/** Minimum allowed fee in basis points */
-export const MIN_FEE_BPS = 10n;
+/** Minimum allowed fee in basis points (1 = 0.01%) */
+export const MIN_FEE_BPS = 1n;
 
-/** Maximum allowed fee in basis points (100 = 1%) */
-export const MAX_FEE_BPS = 100n;
+/** Maximum allowed fee in basis points (1000 = 10%) */
+export const MAX_FEE_BPS = 1000n;
 
 /** RIDE Long max: 2^63 - 1 */
 export const RIDE_MAX_INT = 9223372036854775807n;
@@ -26,8 +26,11 @@ export const RIDE_MAX_INT = 9223372036854775807n;
 /** Identifier for the native DCC token (null asset in DecentralChain) */
 export const DCC_ASSET_ID = 'DCC';
 
-/** LP token decimal places */
+/** LP token decimal places (for display — LP is state-tracked in v2) */
 export const LP_DECIMALS = 8;
 
-/** LP token name prefix */
+/** LP token name prefix (legacy — LP is state-tracked in v2) */
 export const LP_TOKEN_PREFIX = 'DCC-AMM-LP';
+
+/** Virtual address for permanently locked LP */
+export const LOCKED_LP_ADDR = 'LOCKED';

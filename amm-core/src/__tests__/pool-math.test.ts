@@ -244,7 +244,7 @@ describe('getAmountOut', () => {
   });
 
   it('throws on excessive fee', () => {
-    expect(() => getAmountOut(10_000n, reserveA, reserveB, 101n)).toThrow(
+    expect(() => getAmountOut(10_000n, reserveA, reserveB, 1001n)).toThrow(
       'exceeds maximum'
     );
   });
