@@ -160,11 +160,17 @@ export async function executeSwap(
   const slip = slippageBps ?? BigInt(settings.slippageBps);
 
   // ── Apply 1% bot fee ──────────────────────────────────────────
-  const botFeeRaw = (amountIn * BigInt(BOT_FEE_BPS)) / 10000n;
+  // For buys (DCC → token): deduct fee from the DCC input before swapping.
+  // For sells (token → DCC): swap the full token amount, take fee from DCC output.
+  const isBuy = !assetIn || assetIn === 'DCC';
+  const botFeeRaw = isBuy ? (amountIn * BigInt(BOT_FEE_BPS)) / 10000n : 0n;
   const swapAmount = amountIn - botFeeRaw;
 
-  // Build the swap tx using SDK (with reduced amount after fee)
+  // Build the swap tx using SDK
   const { tx, quote } = await sdk.buildSwap(swapAmount, assetIn, assetOut, fee, slip);
+
+  // For sells, calculate bot fee from the output DCC
+  const sellBotFeeRaw = isBuy ? 0n : (quote.amountOut * BigInt(BOT_FEE_BPS)) / 10000n;
 
   // Sign and broadcast
   const chainId = config.chainId.charCodeAt(0);
@@ -186,13 +192,15 @@ export async function executeSwap(
   await waitForTx(signedTx.id!, { apiBase: config.nodeUrl, timeout: config.deadlineMs });
 
   // ── Transfer 1% fee to admin wallet ────────────────────────
-  if (adminAddress && botFeeRaw > 0n) {
+  const actualBotFee = isBuy ? botFeeRaw : sellBotFeeRaw;
+  if (adminAddress && actualBotFee > 0n) {
     try {
-      const feeAssetId = assetIn === 'DCC' ? null : assetIn;   // null = native DCC
+      // For buys, fee is in the input asset (DCC). For sells, fee is in DCC (output).
+      const feeAssetId: string | null = null; // always DCC
       const feeTx = transfer(
         {
           recipient: adminAddress,
-          amount: Number(botFeeRaw),
+          amount: Number(actualBotFee),
           assetId: feeAssetId,
           fee: config.transferFee,
           chainId: chainId,
@@ -222,8 +230,8 @@ export async function executeSwap(
     priceImpact: (Number(quote.priceImpactBps) / 100).toFixed(2),
     fee: fromRawAmount(quote.feeAmount, inDecimals),
     poolId: quote.poolId,
-    botFee: fromRawAmount(botFeeRaw, inDecimals),
-    botFeeRaw,
+    botFee: fromRawAmount(actualBotFee, 8),  // always DCC (8 decimals)
+    botFeeRaw: actualBotFee,
   };
 
   // Record trade
@@ -239,8 +247,8 @@ export async function executeSwap(
   });
 
   // ── Credit referral commissions ───────────────────────────────
-  const feeAssetLabel = (!assetIn || assetIn === 'DCC') ? 'DCC' : assetIn;
-  creditReferralCommissions(userId, tradeId, botFeeRaw, feeAssetLabel);
+  // Bot fee is always in DCC now
+  creditReferralCommissions(userId, tradeId, actualBotFee, 'DCC');
 
   return result;
 }

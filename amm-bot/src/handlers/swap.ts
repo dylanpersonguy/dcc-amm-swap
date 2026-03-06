@@ -138,20 +138,23 @@ export function registerSwapHandlers(bot: Bot) {
 
     if (rawVal === 'custom') {
       session.step = 'awaiting_custom_amount';
+      const unit = session.direction === 'buy' ? 'DCC' : (session.tokenName || 'tokens');
       await ctx.editMessageText(
         '✏️ <b>Enter Amount</b>\n\n' +
-          'Type the amount of DCC to swap:',
+          `Type the amount of ${unit} to ${session.direction}:`,
         { parse_mode: 'HTML', reply_markup: kb.cancelKeyboard() },
       );
       return;
     }
 
-    // Parse preset: value is in DCC (e.g., "1", "5", "10", "25")
-    const dccAmount = parseFloat(rawVal);
-    if (isNaN(dccAmount) || dccAmount <= 0) return;
+    // Parse preset amount
+    const amount = parseFloat(rawVal);
+    if (isNaN(amount) || amount <= 0) return;
 
-    session.amountRaw = BigInt(Math.round(dccAmount * 1e8));
-    session.amountDisplay = dccAmount.toString();
+    // For buys, amount is in DCC (8 decimals). For sells, amount is in the token's units.
+    const decimals = session.direction === 'sell' ? (session.tokenDecimals ?? 8) : 8;
+    session.amountRaw = BigInt(Math.round(amount * 10 ** decimals));
+    session.amountDisplay = amount.toString();
     session.step = 'preview';
 
     await showSwapPreview(ctx, session);
@@ -246,7 +249,8 @@ export function registerSwapHandlers(bot: Bot) {
       return;
     }
 
-    session.amountRaw = BigInt(Math.round(amount * 1e8));
+    const decimals = session.direction === 'sell' ? (session.tokenDecimals ?? 8) : 8;
+    session.amountRaw = BigInt(Math.round(amount * 10 ** decimals));
     session.amountDisplay = amount.toString();
     session.step = 'preview';
 
@@ -278,18 +282,21 @@ async function showSwapMenu(ctx: Context, edit = true) {
 
 async function showAmountSelection(ctx: Context, session: SwapSession) {
   const dirLabel = session.direction === 'buy' ? '🟢 BUY' : '🔴 SELL';
+  const unit = session.direction === 'buy' ? 'DCC' : session.tokenName!;
   const text =
     `${dirLabel} <b>${session.tokenName}</b>\n\n` +
-    'Select amount of DCC to swap:';
+    `Select amount of ${unit} to ${session.direction}:`;
 
   const keyboard = new InlineKeyboard();
 
-  // Preset amounts
-  const presets = ['0.5', '1', '5', '10', '25', '50'];
+  // Preset amounts — DCC for buys, token for sells
+  const presets = session.direction === 'buy'
+    ? ['0.5', '1', '5', '10', '25', '50']
+    : ['10', '50', '100', '500', '1000', '5000'];
   for (let i = 0; i < presets.length; i += 3) {
     const row = presets.slice(i, i + 3);
     for (const p of row) {
-      keyboard.text(`${p} DCC`, `swap:amount:${p}`);
+      keyboard.text(`${p} ${unit}`, `swap:amount:${p}`);
     }
     keyboard.row();
   }
