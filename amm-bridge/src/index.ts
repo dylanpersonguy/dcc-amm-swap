@@ -7,11 +7,13 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import swaggerUi from 'swagger-ui-express';
 import { config } from './config';
 import * as db from './db';
 import { initSolana, checkPendingDeposits } from './solana';
 import { processDeposit } from './dcc';
 import routes from './routes';
+import { getSwaggerSpec } from './swagger';
 
 const app = express();
 
@@ -19,6 +21,14 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+
+// Swagger UI
+app.use('/docs', swaggerUi.serve, swaggerUi.setup(getSwaggerSpec(), {
+  customCss: '.swagger-ui .topbar { display: none }',
+  customSiteTitle: 'DCC Bridge API Docs',
+}));
+// JSON spec endpoint
+app.get('/docs.json', (_req, res) => res.json(getSwaggerSpec()));
 
 // Request logging
 app.use((req, _res, next) => {
@@ -59,6 +69,7 @@ async function start(): Promise<void> {
   // Start Express server
   app.listen(config.port, () => {
     console.log(`\n🚀 Bridge API listening on http://localhost:${config.port}`);
+    console.log(`   📖 Swagger docs: http://localhost:${config.port}/docs`);
     console.log(`   DCC price: $${config.dccPriceUsd}`);
     console.log(`   Bridge fee: ${config.bridgeFeePct}%`);
     console.log(`   Deposit expiry: ${config.depositExpiryMs / 60000} minutes\n`);

@@ -5,9 +5,10 @@ import { Header } from './components/Header';
 import { SwapPanel } from './components/SwapPanel';
 import { LiquidityPanel } from './components/LiquidityPanel';
 import { PoolExplorer } from './components/PoolExplorer';
+import { MyPools } from './components/MyPools';
 import { ConnectModal } from './components/ConnectModal';
 
-type Tab = 'swap' | 'liquidity' | 'pools';
+type Tab = 'swap' | 'liquidity' | 'pools' | 'mypools';
 
 export function App() {
   const [activeTab, setActiveTab] = useState<Tab>('swap');
@@ -26,7 +27,7 @@ export function App() {
           <Header />
 
           <nav className="tab-bar">
-            {(['swap', 'liquidity', 'pools'] as Tab[]).map((tab) => (
+            {(['swap', 'liquidity', 'pools', 'mypools'] as Tab[]).map((tab) => (
               <button
                 key={tab}
                 className={`tab-btn ${activeTab === tab ? 'active' : ''}`}
@@ -50,7 +51,12 @@ export function App() {
                     <rect x="9" y="9" width="5" height="5" rx="1" stroke="currentColor" strokeWidth="1.5"/>
                   </svg>
                 )}
-                <span>{tab.charAt(0).toUpperCase() + tab.slice(1)}</span>
+                {tab === 'mypools' && (
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 1.5a3.5 3.5 0 100 7 3.5 3.5 0 000-7zM2.5 14c0-2.5 2.5-4 5.5-4s5.5 1.5 5.5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+                  </svg>
+                )}
+                <span>{tab === 'mypools' ? 'My Pools' : tab.charAt(0).toUpperCase() + tab.slice(1)}</span>
               </button>
             ))}
           </nav>
@@ -59,6 +65,7 @@ export function App() {
             {activeTab === 'swap' && <SwapPanel />}
             {activeTab === 'liquidity' && <LiquidityPanel />}
             {activeTab === 'pools' && <PoolExplorer />}
+            {activeTab === 'mypools' && <MyPools />}
           </main>
 
           <footer className="footer">
