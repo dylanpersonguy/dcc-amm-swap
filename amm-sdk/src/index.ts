@@ -19,6 +19,8 @@ export type {
   AddLiquidityParamsV2,
   RemoveLiquidityParamsV2,
   SwapExactInParamsV2,
+  LockLiquidityParams,
+  ClaimLpTokensParams,
   InvokeScriptTx,
   DataEntry,
 } from './types';

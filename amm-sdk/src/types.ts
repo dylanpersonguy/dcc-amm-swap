@@ -1,13 +1,14 @@
 /**
  * SDK type definitions for pool state, swap params, and transaction building.
  *
- * v2: Pool ID format is "p:<token0>:<token1>:<feeBps>".
- *     LP is state-tracked (no lpAssetId).
+ * v3: Pool ID format is "p:<token0>:<token1>:<feeBps>".
+ *     LP tokens are real on-chain assets issued by the dApp.
+ *     Lock liquidity by burning LP tokens.
  */
 
 // ── v2 Pool State ───────────────────────────────────────────────────
 
-/** v2 pool state — matches Pool.ride v2 state schema */
+/** v3 pool state — matches Pool.ride v3 state schema */
 export interface PoolStateV2 {
   /** Pool ID: "p:<token0>:<token1>:<feeBps>" */
   poolId: string;
@@ -19,8 +20,10 @@ export interface PoolStateV2 {
   reserve0: bigint;
   /** Reserve of token1 */
   reserve1: bigint;
-  /** Total LP supply (state-tracked, not an on-chain asset) */
+  /** Total LP supply (includes permanently locked minLiquidity) */
   lpSupply: bigint;
+  /** LP token assetId (Base58). Empty string if legacy pool without LP token. */
+  lpAssetId: string;
   /** Fee in basis points (1-1000) */
   feeBps: bigint;
   /** Last k = reserve0 x reserve1 */
@@ -74,7 +77,7 @@ export interface AddLiquidityParamsV2 {
   deadline: number;
 }
 
-/** v2 removeLiquidity: state-based LP burn */
+/** v3 removeLiquidity: send LP tokens as payment */
 export interface RemoveLiquidityParamsV2 {
   assetA: string;
   assetB: string;
@@ -83,6 +86,26 @@ export interface RemoveLiquidityParamsV2 {
   amountAMin: bigint;
   amountBMin: bigint;
   deadline: number;
+  /** LP token assetId (required for pools with LP tokens) */
+  lpAssetId?: string;
+}
+
+/** v3 lockLiquidity: burn LP tokens to permanently lock liquidity */
+export interface LockLiquidityParams {
+  assetA: string;
+  assetB: string;
+  feeBps: number;
+  /** LP token assetId */
+  lpAssetId: string;
+  /** Amount of LP tokens to burn/lock */
+  lpAmount: bigint;
+}
+
+/** v3 claimLpTokens: claim real LP tokens for legacy pool positions */
+export interface ClaimLpTokensParams {
+  assetA: string;
+  assetB: string;
+  feeBps: number;
 }
 
 /** v2 swapExactIn */

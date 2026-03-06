@@ -105,6 +105,7 @@ export class NodeClient {
       volume1: BigInt((map.get('volume1')?.value as number) ?? 0),
       fees0: BigInt((map.get('fees0')?.value as number) ?? 0),
       fees1: BigInt((map.get('fees1')?.value as number) ?? 0),
+      lpAssetId: (map.get('lpAssetId')?.value as string) ?? '',
     };
   }
 
@@ -124,6 +125,18 @@ export class NodeClient {
   async getPoolCount(): Promise<number> {
     const val = await this.getInteger('poolCount');
     return val !== null ? Number(val) : 0;
+  }
+
+  /** Get LP token asset ID for a pool (empty string if legacy pool without LP token) */
+  async getPoolLpAssetId(poolId: string): Promise<string> {
+    const val = await this.getString(`pool:lpAssetId:${poolId}`);
+    return val ?? '';
+  }
+
+  /** Check if a user has already claimed LP tokens for a legacy pool */
+  async hasClaimedLpTokens(poolId: string, address: string): Promise<boolean> {
+    const val = await this.getBoolean(`lpClaimed:${poolId}:${address}`);
+    return val === true;
   }
 
   /** Get LP balance for an address in a specific pool */

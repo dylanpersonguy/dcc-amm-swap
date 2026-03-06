@@ -1,7 +1,7 @@
 {-# STDLIB_VERSION 5 #-}
 {-# CONTENT_TYPE DAPP #-}
 {-# SCRIPT_TYPE ACCOUNT #-}
-let VERSION         = 2
+let VERSION         = 3
 let Scale8          = 100000000
 let FeeScale        = 10000
 let minFeeBps     = 1
@@ -84,6 +84,9 @@ func keyPoolFees0(pid: String)    = "pool:fees0:" + pid
 func keyPoolFees1(pid: String)    = "pool:fees1:" + pid
 func keyPoolSwaps(pid: String)    = "pool:swaps:" + pid
 func keyPoolLiqEvents(pid: String) = "pool:liquidityEvents:" + pid
+func keyPoolLpAssetId(pid: String)  = "pool:lpAssetId:" + pid
+func keyLpTokenCount()             = "lpTokenCount"
+func keyLpClaimed(pid: String, addr: String) = "lpClaimed:" + pid + ":" + addr
 func poolExists(pid: String)   = tryGetInteger(keyPoolExists(pid)) == 1
 func getR0(pid: String)        = tryGetInteger(keyPoolR0(pid))
 func getR1(pid: String)        = tryGetInteger(keyPoolR1(pid))
@@ -92,6 +95,7 @@ func getFeeBps(pid: String)    = tryGetInteger(keyPoolFee(pid))
 func getT0(pid: String)        = tryGetString(keyPoolT0(pid))
 func getT1(pid: String)        = tryGetString(keyPoolT1(pid))
 func getLpBalance(pid: String, addr: String) = tryGetInteger(keyLpBalance(pid, addr))
+func getPoolLpAssetId(pid: String) = tryGetString(keyPoolLpAssetId(pid))
 func isPaused()                = tryGetBoolean(keyPaused())
 func getAdmin()                = tryGetString(keyAdmin())
 func isqrt(n: Int) = {
@@ -260,14 +264,27 @@ func addLiquidity(
     let newK = desired0 * desired1
     let refund0 = pay0 - desired0
     let refund1 = pay1 - desired1
+    # Issue a real LP token for this pool
+    let lpNum = tryGetInteger(keyLpTokenCount()) + 1
+    let lpTokenName = "LP-DCC-" + lpNum.toString()
+    let lpTokenDesc = "DCC AMM Liquidity Pool token | " + pid
+    let issueAction = Issue(lpTokenName, lpTokenDesc, sqrtK, 8, true)
+    let lpAssetId = calculateAssetId(issueAction)
+    # Burn minLiquidity permanently (locked forever in the pool)
+    let burnLocked = Burn(lpAssetId, minLiquidity)
     let baseActions = [
+      issueAction,
+      burnLocked,
+      StringEntry(keyPoolLpAssetId(pid), lpAssetId.toBase58String()),
+      IntegerEntry(keyLpTokenCount(), lpNum),
       IntegerEntry(keyPoolR0(pid), desired0),
       IntegerEntry(keyPoolR1(pid), desired1),
       IntegerEntry(keyPoolLpSupply(pid), sqrtK),
       IntegerEntry(keyPoolLastK(pid), newK),
       IntegerEntry(keyLpBalance(pid, lockedLpAddr), minLiquidity),
       IntegerEntry(keyLpBalance(pid, callerAddr), lpMinted),
-      IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1)
+      IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1),
+      ScriptTransfer(i.caller, lpMinted, lpAssetId)
     ]
     let withRefund0 = if (refund0 > 0)
       then baseActions :+ ScriptTransfer(i.caller, refund0, getAssetBytes(t0))
@@ -298,6 +315,29 @@ func addLiquidity(
     let currentLp = getLpBalance(pid, callerAddr)
     let refund0 = pay0 - used0
     let refund1 = pay1 - used1
+    # Reissue LP tokens if pool has an LP token, otherwise issue new one
+    let lpAssetIdStr = getPoolLpAssetId(pid)
+    let lpActions = if (lpAssetIdStr != "") then {
+      let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
+      [
+        Reissue(lpAssetIdBytes, lpMinted, true),
+        ScriptTransfer(i.caller, lpMinted, lpAssetIdBytes)
+      ]
+    } else {
+      # Legacy pool without LP token — issue one now
+      let lpNum = tryGetInteger(keyLpTokenCount()) + 1
+      let lpTokenName = "LP-DCC-" + lpNum.toString()
+      let lpTokenDesc = "DCC AMM Liquidity Pool token | " + pid
+      # Issue total supply (existing + new), existing holders claim via claimLpTokens
+      let issueAction = Issue(lpTokenName, lpTokenDesc, supply + lpMinted, 8, true)
+      let lpAssetId = calculateAssetId(issueAction)
+      [
+        issueAction,
+        StringEntry(keyPoolLpAssetId(pid), lpAssetId.toBase58String()),
+        IntegerEntry(keyLpTokenCount(), lpNum),
+        ScriptTransfer(i.caller, lpMinted, lpAssetId)
+      ]
+    }
     let baseActions = [
       IntegerEntry(keyPoolR0(pid), newR0),
       IntegerEntry(keyPoolR1(pid), newR1),
@@ -305,7 +345,7 @@ func addLiquidity(
       IntegerEntry(keyPoolLastK(pid), newK),
       IntegerEntry(keyLpBalance(pid, callerAddr), currentLp + lpMinted),
       IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1)
-    ]
+    ] ++ lpActions
     let withRefund0 = if (refund0 > 0)
       then baseActions :+ ScriptTransfer(i.caller, refund0, getAssetBytes(t0))
       else baseActions
@@ -329,7 +369,23 @@ func removeLiquidity(
   strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
   let callerAddr = i.caller.toString()
   let userLp = getLpBalance(pid, callerAddr)
-  strict chkBal = must(userLp >= lpAmount, "E_INSUFFICIENT_LP: have=" + userLp.toString() + " need=" + lpAmount.toString())
+  let lpAssetIdStr = getPoolLpAssetId(pid)
+  let hasLpToken = lpAssetIdStr != ""
+  # If pool has LP tokens, require LP token payment; otherwise use internal accounting
+  let lpPaid = if (hasLpToken) then {
+    let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
+    func lpFinder(accum: Int, pmt: AttachedPayment) = {
+      if (pmt.assetId == lpAssetIdBytes) then pmt.amount else accum
+    }
+    let found = FOLD<10>(i.payments, -1, lpFinder)
+    if (found == -1) then throw("E_MISSING_LP_PAYMENT: send LP tokens to remove liquidity")
+    else found
+  } else 0
+  strict chkLpPaid = if (hasLpToken) then {
+    must(lpPaid >= lpAmount, "E_INSUFFICIENT_LP_PAYMENT: sent=" + lpPaid.toString() + " need=" + lpAmount.toString())
+  } else {
+    must(userLp >= lpAmount, "E_INSUFFICIENT_LP: have=" + userLp.toString() + " need=" + lpAmount.toString())
+  }
   let res0 = getR0(pid)
   let res1 = getR1(pid)
   let supply = getLpSupply(pid)
@@ -345,6 +401,14 @@ func removeLiquidity(
   let newSupply = supply - lpAmount
   strict chkResNeg = must(newR0 >= 0 && newR1 >= 0, "E_NEGATIVE_RESERVE: this should never happen")
   let newK = if (newR0 == 0 || newR1 == 0) then 0 else newR0 * newR1
+  # Burn LP tokens if pool has them; refund excess LP payment
+  let lpBurnActions = if (hasLpToken) then {
+    let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
+    let refundLp = lpPaid - lpAmount
+    let burnActions = [Burn(lpAssetIdBytes, lpAmount)]
+    if (refundLp > 0) then burnActions :+ ScriptTransfer(i.caller, refundLp, lpAssetIdBytes)
+    else burnActions
+  } else nil
   [
     IntegerEntry(keyPoolR0(pid), newR0),
     IntegerEntry(keyPoolR1(pid), newR1),
@@ -354,7 +418,7 @@ func removeLiquidity(
     IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1),
     ScriptTransfer(i.caller, amount0Out, getAssetBytes(t0)),
     ScriptTransfer(i.caller, amount1Out, getAssetBytes(t1))
-  ]
+  ] ++ lpBurnActions
 }
 @Callable(i)
 func swapExactIn(
@@ -443,6 +507,52 @@ func getPoolInfo(assetA: String, assetB: String, feeBps: Int) = {
       + "|" + tryGetInteger(keyPoolSwaps(pid)).toString()
     ([], info)
   }
+}
+# ── Lock Liquidity — permanently lock LP by burning tokens ──────────
+@Callable(i)
+func lockLiquidity(assetA: String, assetB: String, feeBps: Int) = {
+  let (t0, t1) = canonicalOrder(assetA, assetB)
+  let pid = makePoolId(t0, t1, feeBps)
+  strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
+  let lpAssetIdStr = getPoolLpAssetId(pid)
+  strict chkLp = must(lpAssetIdStr != "", "E_NO_LP_TOKEN: pool has no LP token yet")
+  let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
+  func lpFinder(accum: Int, pmt: AttachedPayment) = {
+    if (pmt.assetId == lpAssetIdBytes) then pmt.amount else accum
+  }
+  let lpAmount = FOLD<10>(i.payments, -1, lpFinder)
+  strict chkAmt = must(lpAmount > 0, "E_ZERO_LP: attach LP tokens to lock")
+  # Burn LP tokens but do NOT decrease lpSupply or reserves.
+  # The burned tokens' share of reserves is permanently locked in the pool.
+  # This means every remaining LP token becomes worth more underlying assets.
+  let callerAddr = i.caller.toString()
+  let currentLp = getLpBalance(pid, callerAddr)
+  [
+    Burn(lpAssetIdBytes, lpAmount),
+    IntegerEntry(keyLpBalance(pid, callerAddr), if (currentLp >= lpAmount) then currentLp - lpAmount else 0),
+    IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1)
+  ]
+}
+# ── Claim LP Tokens — for legacy pools that got LP tokens after creation ─
+@Callable(i)
+func claimLpTokens(assetA: String, assetB: String, feeBps: Int) = {
+  let (t0, t1) = canonicalOrder(assetA, assetB)
+  let pid = makePoolId(t0, t1, feeBps)
+  strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
+  let lpAssetIdStr = getPoolLpAssetId(pid)
+  strict chkLp = must(lpAssetIdStr != "", "E_NO_LP_TOKEN: pool has no LP token yet")
+  let callerAddr = i.caller.toString()
+  let claimedKey = keyLpClaimed(pid, callerAddr)
+  strict chkNotClaimed = must(!tryGetBoolean(claimedKey), "E_ALREADY_CLAIMED: LP tokens already claimed")
+  let internalBalance = getLpBalance(pid, callerAddr)
+  strict chkHasBal = must(internalBalance > 0, "E_NO_LP_BALANCE: no LP balance to claim")
+  let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
+  # Reissue tokens for this user's internal balance and transfer them
+  [
+    Reissue(lpAssetIdBytes, internalBalance, true),
+    ScriptTransfer(i.caller, internalBalance, lpAssetIdBytes),
+    BooleanEntry(claimedKey, true)
+  ]
 }
 @Callable(i)
 func pause() = {

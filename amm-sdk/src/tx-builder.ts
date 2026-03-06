@@ -14,6 +14,8 @@ import {
   AddLiquidityParamsV2,
   RemoveLiquidityParamsV2,
   SwapExactInParamsV2,
+  LockLiquidityParams,
+  ClaimLpTokensParams,
 } from './types';
 
 const DEFAULT_INVOKE_FEE = 900000;
@@ -78,8 +80,12 @@ export class TxBuilder {
     };
   }
 
-  /** removeLiquidity(assetA, assetB, feeBps, lpAmount, aMin, bMin, deadline) — no payments */
+  /** removeLiquidity(assetA, assetB, feeBps, lpAmount, aMin, bMin, deadline) — send LP tokens as payment */
   buildRemoveLiquidity(params: RemoveLiquidityParamsV2): InvokeScriptTx {
+    const payment: Array<{ assetId: string | null; amount: number }> = [];
+    if (params.lpAssetId) {
+      payment.push({ assetId: params.lpAssetId, amount: Number(params.lpAmount) });
+    }
     return {
       type: 16,
       dApp: this.dAppAddress,
@@ -95,7 +101,7 @@ export class TxBuilder {
           { type: 'integer', value: params.deadline },
         ],
       },
-      payment: [],
+      payment,
       fee: DEFAULT_INVOKE_FEE,
       chainId: this.chainId,
     };
@@ -120,6 +126,46 @@ export class TxBuilder {
       payment: [
         { assetId: paymentAssetId(params.assetIn), amount: Number(params.amountIn) },
       ],
+      fee: DEFAULT_INVOKE_FEE,
+      chainId: this.chainId,
+    };
+  }
+
+  /** lockLiquidity(assetA, assetB, feeBps) — send LP tokens as payment to permanently lock liquidity */
+  buildLockLiquidity(params: LockLiquidityParams): InvokeScriptTx {
+    return {
+      type: 16,
+      dApp: this.dAppAddress,
+      call: {
+        function: 'lockLiquidity',
+        args: [
+          { type: 'string', value: params.assetA },
+          { type: 'string', value: params.assetB },
+          { type: 'integer', value: params.feeBps },
+        ],
+      },
+      payment: [
+        { assetId: params.lpAssetId, amount: Number(params.lpAmount) },
+      ],
+      fee: DEFAULT_INVOKE_FEE,
+      chainId: this.chainId,
+    };
+  }
+
+  /** claimLpTokens(assetA, assetB, feeBps) — claim real LP tokens for legacy pool internal balance */
+  buildClaimLpTokens(params: ClaimLpTokensParams): InvokeScriptTx {
+    return {
+      type: 16,
+      dApp: this.dAppAddress,
+      call: {
+        function: 'claimLpTokens',
+        args: [
+          { type: 'string', value: params.assetA },
+          { type: 'string', value: params.assetB },
+          { type: 'integer', value: params.feeBps },
+        ],
+      },
+      payment: [],
       fee: DEFAULT_INVOKE_FEE,
       chainId: this.chainId,
     };
