@@ -50,7 +50,7 @@ describe('TxBuilder v2', () => {
       expect(tx.call.args[0]).toEqual({ type: 'string', value: 'DCC' });
       expect(tx.call.args[1]).toEqual({ type: 'string', value: '3PTokenB' });
       expect(tx.call.args[2]).toEqual({ type: 'integer', value: 30 });
-      expect(tx.payment).toHaveLength(0); // v2: no payments
+      expect(tx.payment).toHaveLength(0);
     });
   });
 

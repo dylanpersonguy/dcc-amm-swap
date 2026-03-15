@@ -1,12 +1,12 @@
 /**
  * Wallet context — manages connection via built-in seed signer.
  *
- * Uses @waves/waves-transactions for address derivation, signing, and broadcasting.
+ * Uses @decentralchain/transactions for address derivation, signing, and broadcasting.
  * Modal-based connect flow (no browser prompt()).
  */
 
 import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
-import { invokeScript, broadcast, waitForTx, libs } from '@waves/waves-transactions';
+import { invokeScript, broadcast, waitForTx, libs } from '@decentralchain/transactions';
 import { config } from '../config';
 
 interface WalletState {

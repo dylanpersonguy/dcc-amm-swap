@@ -2,7 +2,7 @@
  * DCC payout service — sends DCC to users after their Solana deposit is confirmed.
  */
 
-import { transfer, broadcast, waitForTx } from '@waves/waves-transactions';
+import { transfer, broadcast, waitForTx } from '@decentralchain/transactions';
 import { config } from './config';
 import * as db from './db';
 

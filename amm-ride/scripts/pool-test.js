@@ -3,14 +3,6 @@
  * End-to-end AMM test: Issue token, create pool, add liquidity, swap.
  * Uses a separate "user" account for pool interactions (dApp self-payment is forbidden in V4+).
  */
-const {
-  issue,
-  transfer,
-  invokeScript,
-  broadcast,
-  waitForTx,
-  libs,
-} = require('@waves/waves-transactions');
 
 const ADMIN_SEED = process.env.SEED;
 if (!ADMIN_SEED) {
@@ -21,11 +13,9 @@ if (!ADMIN_SEED) {
 const NODE = 'https://mainnet-node.decentralchain.io';
 const CHAIN = 63; // '?'
 const DAPP = '3Da7xwRRtXfkA46jaKTYb75Usd2ZNWdY6HX';
-const ADMIN_ADDR = libs.crypto.address(ADMIN_SEED, '?');
 
-// Generate a deterministic user account for testing
-const USER_SEED = ADMIN_SEED + ' user';
-const USER_ADDR = libs.crypto.address(USER_SEED, '?');
+let issue, transfer, invokeScript, broadcast, waitForTx, libs;
+let ADMIN_ADDR, USER_SEED, USER_ADDR;
 
 // Fees
 const INVOKE_FEE = 900000;    // 0.009 DCC (smart account invoke)
@@ -50,6 +40,13 @@ async function sendAndWait(tx) {
 }
 
 async function main() {
+  const dcc = await import('@decentralchain/transactions');
+  issue = dcc.issue; transfer = dcc.transfer; invokeScript = dcc.invokeScript;
+  broadcast = dcc.broadcast; waitForTx = dcc.waitForTx; libs = dcc.libs;
+  ADMIN_ADDR = libs.crypto.address(ADMIN_SEED, '?');
+  USER_SEED = ADMIN_SEED + ' user';
+  USER_ADDR = libs.crypto.address(USER_SEED, '?');
+
   console.log(`\nAdmin (dApp): ${ADMIN_ADDR}`);
   console.log(`User account: ${USER_ADDR}\n`);
 

@@ -20,6 +20,7 @@ export function SdkProvider({ children }: { children: ReactNode }) {
       new AmmSdk({
         nodeUrl: config.nodeUrl,
         dAppAddress: config.dAppAddress,
+        routerAddress: config.routerAddress,
         chainId: config.chainId,
       }),
     []

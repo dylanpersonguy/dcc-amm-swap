@@ -1,11 +1,16 @@
 /**
- * LiquidityPanel — Add/Remove/Create liquidity interface with token modals.
+ * LiquidityPanel — Add/Remove/Create liquidity with balance display,
+ * max buttons, and toast/tx-tracker integration.
  */
 
 import React, { useState, useCallback } from 'react';
 import { useWallet } from '../context/WalletContext';
 import { useSdk } from '../context/SdkContext';
 import { useTokens, getTokenColor } from '../hooks/useTokens';
+import { getTokenLogo } from '../hooks/useTokens';
+import { useBalances } from '../hooks/useBalances';
+import { useToasts } from '../context/ToastContext';
+import { useTxTracker } from '../context/TransactionTracker';
 import { TokenModal } from './TokenModal';
 import { config } from '../config';
 
@@ -15,6 +20,9 @@ export function LiquidityPanel() {
   const wallet = useWallet();
   const sdk = useSdk();
   const { tokens } = useTokens();
+  const { getBalance, formatBalance, refresh: refreshBalances } = useBalances();
+  const { addToast } = useToasts();
+  const { trackTransaction, confirmTransaction, failTransaction } = useTxTracker();
 
   const [mode, setMode] = useState<LiquidityMode>('add');
   const [assetA, setAssetA] = useState<string>('DCC');
@@ -22,7 +30,7 @@ export function LiquidityPanel() {
   const [amountA, setAmountA] = useState('');
   const [amountB, setAmountB] = useState('');
   const [lpAmount, setLpAmount] = useState('');
-  const [feeBps, setFeeBps] = useState('30');
+  const [feeBps, setFeeBps] = useState('35');
   const [slippageBps, setSlippageBps] = useState('50');
   const [txStatus, setTxStatus] = useState<'idle' | 'pending' | 'success' | 'error'>('idle');
   const [txId, setTxId] = useState<string | null>(null);
@@ -43,29 +51,59 @@ export function LiquidityPanel() {
     return t?.decimals ?? 8;
   };
 
+  const formatBigIntAmount = (val: bigint, decimals: number): string => {
+    const str = val.toString().padStart(decimals + 1, '0');
+    const int = str.slice(0, str.length - decimals);
+    const frac = str.slice(str.length - decimals).replace(/0+$/, '');
+    return frac ? `${int}.${frac}` : int;
+  };
+
+  const handleMaxA = () => {
+    const decimals = getDecimals(assetA);
+    const balance = getBalance(assetA);
+    const reserved = (!assetA || assetA === 'DCC') ? BigInt(1_000_000) : 0n;
+    const maxAmount = balance > reserved ? balance - reserved : 0n;
+    setAmountA(formatBigIntAmount(maxAmount, decimals));
+  };
+
+  const handleMaxB = () => {
+    const decimals = getDecimals(assetB);
+    const balance = getBalance(assetB);
+    const reserved = (!assetB || assetB === 'DCC') ? BigInt(1_000_000) : 0n;
+    const maxAmount = balance > reserved ? balance - reserved : 0n;
+    setAmountB(formatBigIntAmount(maxAmount, decimals));
+  };
+
   const handleCreatePool = useCallback(async () => {
     if (!wallet.isConnected || !assetB) return;
     setTxStatus('pending');
     setTxError(null);
+    const trackId = trackTransaction('create-pool', `Create ${getTokenName(assetA)}/${getTokenName(assetB)} pool`);
     try {
       const { tx } = sdk.buildCreatePool(
         assetA === 'DCC' ? null : assetA,
         assetB === 'DCC' ? null : assetB,
-        parseInt(feeBps) || 30,
+        parseInt(feeBps) || 35,
       );
       const id = await wallet.signAndBroadcast(tx);
       setTxId(id);
       setTxStatus('success');
+      confirmTransaction(trackId, id);
+      addToast('success', 'Pool created!', { txId: id });
     } catch (err) {
-      setTxError(err instanceof Error ? err.message : 'Transaction failed');
+      const msg = err instanceof Error ? err.message : 'Transaction failed';
+      setTxError(msg);
       setTxStatus('error');
+      failTransaction(trackId);
+      addToast('error', msg);
     }
-  }, [wallet, sdk, assetA, assetB, feeBps]);
+  }, [wallet, sdk, assetA, assetB, feeBps, trackTransaction, confirmTransaction, failTransaction, addToast]);
 
   const handleAddLiquidity = useCallback(async () => {
     if (!wallet.isConnected || !assetB) return;
     setTxStatus('pending');
     setTxError(null);
+    const trackId = trackTransaction('add-liquidity', `Add liquidity to ${getTokenName(assetA)}/${getTokenName(assetB)}`);
     try {
       const rawA = BigInt(Math.floor(parseFloat(amountA) * 10 ** getDecimals(assetA)));
       const rawB = BigInt(Math.floor(parseFloat(amountB) * 10 ** getDecimals(assetB)));
@@ -74,39 +112,52 @@ export function LiquidityPanel() {
         assetB === 'DCC' ? null : assetB,
         rawA,
         rawB,
-        parseInt(feeBps) || 30,
+        parseInt(feeBps) || 35,
         BigInt(parseInt(slippageBps) || 50)
       );
       const id = await wallet.signAndBroadcast(tx);
       setTxId(id);
       setTxStatus('success');
+      confirmTransaction(trackId, id);
+      addToast('success', 'Liquidity added!', { txId: id });
+      setTimeout(() => refreshBalances(), 2000);
     } catch (err) {
-      setTxError(err instanceof Error ? err.message : 'Transaction failed');
+      const msg = err instanceof Error ? err.message : 'Transaction failed';
+      setTxError(msg);
       setTxStatus('error');
+      failTransaction(trackId);
+      addToast('error', msg);
     }
-  }, [wallet, sdk, assetA, assetB, amountA, amountB, feeBps, slippageBps]);
+  }, [wallet, sdk, assetA, assetB, amountA, amountB, feeBps, slippageBps, trackTransaction, confirmTransaction, failTransaction, addToast, refreshBalances]);
 
   const handleRemoveLiquidity = useCallback(async () => {
     if (!wallet.isConnected || !assetB) return;
     setTxStatus('pending');
     setTxError(null);
+    const trackId = trackTransaction('remove-liquidity', `Remove liquidity from ${getTokenName(assetA)}/${getTokenName(assetB)}`);
     try {
       const rawLp = BigInt(Math.floor(parseFloat(lpAmount) * 1e8)); // LP tokens always 8 decimals
       const { tx } = await sdk.buildRemoveLiquidity(
         assetA === 'DCC' ? null : assetA,
         assetB === 'DCC' ? null : assetB,
-        parseInt(feeBps) || 30,
+        parseInt(feeBps) || 35,
         rawLp,
         BigInt(parseInt(slippageBps) || 50)
       );
       const id = await wallet.signAndBroadcast(tx);
       setTxId(id);
       setTxStatus('success');
+      confirmTransaction(trackId, id);
+      addToast('success', 'Liquidity removed!', { txId: id });
+      setTimeout(() => refreshBalances(), 2000);
     } catch (err) {
-      setTxError(err instanceof Error ? err.message : 'Transaction failed');
+      const msg = err instanceof Error ? err.message : 'Transaction failed';
+      setTxError(msg);
       setTxStatus('error');
+      failTransaction(trackId);
+      addToast('error', msg);
     }
-  }, [wallet, sdk, assetA, assetB, lpAmount, feeBps, slippageBps]);
+  }, [wallet, sdk, assetA, assetB, lpAmount, feeBps, slippageBps, trackTransaction, confirmTransaction, failTransaction, addToast, refreshBalances]);
 
   const getAction = () => {
     if (mode === 'create') return handleCreatePool;
@@ -178,7 +229,7 @@ export function LiquidityPanel() {
           <div className="setting-item compact">
             <label>Fee Tier</label>
             <div className="option-pills">
-              {['10', '30', '100'].map((v) => (
+              {['10', '35', '100'].map((v) => (
                 <button
                   key={v}
                   className={`pill sm ${feeBps === v ? 'active' : ''}`}
@@ -195,6 +246,12 @@ export function LiquidityPanel() {
         <div className="token-field">
           <div className="token-field-head">
             <span className="token-field-label">Token A</span>
+            {wallet.isConnected && (
+              <div className="token-field-balance">
+                <span>Balance: {formatBalance(assetA, getDecimals(assetA))}</span>
+                {mode !== 'remove' && <button className="max-btn" onClick={handleMaxA}>MAX</button>}
+              </div>
+            )}
           </div>
           <div className="token-field-body">
             {mode !== 'remove' && (
@@ -207,7 +264,12 @@ export function LiquidityPanel() {
               />
             )}
             <button className="token-pill" onClick={() => setShowTokenAModal(true)}>
-              <span className="token-pill-dot" style={{ background: getTokenColor(assetA === 'DCC' ? null : assetA) }} />
+              {(() => {
+                const logo = getTokenLogo(getTokenName(assetA), assetA === 'DCC' ? null : assetA);
+                return logo
+                  ? <img src={logo} alt={getTokenName(assetA)} className="token-pill-logo" />
+                  : <span className="token-pill-dot" style={{ background: getTokenColor(assetA === 'DCC' ? null : assetA) }} />;
+              })()}
               <span className="token-pill-name">{getTokenName(assetA)}</span>
               <svg className="token-pill-caret" width="12" height="12" viewBox="0 0 12 12" fill="none">
                 <path d="M3 5l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -225,6 +287,12 @@ export function LiquidityPanel() {
         <div className="token-field">
           <div className="token-field-head">
             <span className="token-field-label">Token B</span>
+            {wallet.isConnected && assetB && (
+              <div className="token-field-balance">
+                <span>Balance: {formatBalance(assetB, getDecimals(assetB))}</span>
+                {mode !== 'remove' && <button className="max-btn" onClick={handleMaxB}>MAX</button>}
+              </div>
+            )}
           </div>
           <div className="token-field-body">
             {mode !== 'remove' && (
@@ -239,7 +307,12 @@ export function LiquidityPanel() {
             <button className="token-pill" onClick={() => setShowTokenBModal(true)}>
               {assetB ? (
                 <>
-                  <span className="token-pill-dot" style={{ background: getTokenColor(assetB === 'DCC' ? null : assetB) }} />
+                  {(() => {
+                    const logo = getTokenLogo(getTokenName(assetB), assetB === 'DCC' ? null : assetB);
+                    return logo
+                      ? <img src={logo} alt={getTokenName(assetB)} className="token-pill-logo" />
+                      : <span className="token-pill-dot" style={{ background: getTokenColor(assetB === 'DCC' ? null : assetB) }} />;
+                  })()}
                   <span className="token-pill-name">{getTokenName(assetB)}</span>
                 </>
               ) : (
@@ -280,28 +353,6 @@ export function LiquidityPanel() {
           {getButtonLabel()}
         </button>
 
-        {/* Status */}
-        {txStatus === 'success' && txId && (
-          <div className="tx-toast success">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5"/>
-              <path d="M5 8l2 2 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-            </svg>
-            <span>Transaction confirmed!</span>
-            <a href={`${config.explorerUrl}/tx/${txId}`} target="_blank" rel="noopener noreferrer">
-              View tx ↗
-            </a>
-          </div>
-        )}
-        {txStatus === 'error' && txError && (
-          <div className="tx-toast error">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-              <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5"/>
-              <path d="M6 6l4 4M10 6l-4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
-            </svg>
-            <span>{txError}</span>
-          </div>
-        )}
       </div>
 
       <TokenModal

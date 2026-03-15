@@ -5,7 +5,8 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import type { TokenInfo } from '../hooks/useTokens';
-import { getTokenColor } from '../hooks/useTokens';
+import { getTokenColor, getTokenLogo } from '../hooks/useTokens';
+import { TokenInfoPopup } from './TokenInfoPopup';
 
 interface TokenModalProps {
   isOpen: boolean;
@@ -26,6 +27,7 @@ export function TokenModal({
 }: TokenModalProps) {
   const [search, setSearch] = useState('');
   const [customId, setCustomId] = useState('');
+  const [infoAssetId, setInfoAssetId] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -67,6 +69,7 @@ export function TokenModal({
   };
 
   return (
+    <>
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-card token-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
@@ -106,7 +109,12 @@ export function TokenModal({
                   className="token-quick-btn"
                   onClick={() => handleSelect(token)}
                 >
-                  <span className="token-dot" style={{ background: getTokenColor(token.assetId) }} />
+                  {(() => {
+                    const logo = getTokenLogo(token.name, token.assetId);
+                    return logo
+                      ? <img src={logo} alt={token.name} className="token-dot-logo" />
+                      : <span className="token-dot" style={{ background: getTokenColor(token.assetId) }} />;
+                  })()}
                   {token.name}
                 </button>
               );
@@ -122,12 +130,19 @@ export function TokenModal({
                 className="token-list-item"
                 onClick={() => handleSelect(token)}
               >
-                <span
-                  className="token-dot-lg"
-                  style={{ background: getTokenColor(token.assetId) }}
-                >
-                  {token.name.charAt(0).toUpperCase()}
-                </span>
+                {(() => {
+                  const logo = getTokenLogo(token.name, token.assetId);
+                  return logo
+                    ? <img src={logo} alt={token.name} className="token-dot-lg-logo" />
+                    : (
+                      <span
+                        className="token-dot-lg"
+                        style={{ background: getTokenColor(token.assetId) }}
+                      >
+                        {token.name.charAt(0).toUpperCase()}
+                      </span>
+                    );
+                })()}
                 <div className="token-list-info">
                   <span className="token-list-name">{token.name}</span>
                   <span className="token-list-id">
@@ -137,6 +152,16 @@ export function TokenModal({
                   </span>
                 </div>
                 <span className="token-list-decimals">{token.decimals}d</span>
+                <button
+                  className="token-info-btn"
+                  onClick={(e) => { e.stopPropagation(); setInfoAssetId(token.assetId); }}
+                  title="Token info"
+                >
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.2"/>
+                    <path d="M8 7v4M8 5.5v.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round"/>
+                  </svg>
+                </button>
               </button>
             ))}
             {filtered.length === 0 && (
@@ -174,5 +199,19 @@ export function TokenModal({
         </div>
       </div>
     </div>
+
+    {infoAssetId !== null && (() => {
+      const infoToken = tokens.find((t) => t.assetId === infoAssetId);
+      return (
+        <TokenInfoPopup
+          assetId={infoAssetId}
+          name={infoToken?.name ?? 'Unknown'}
+          decimals={infoToken?.decimals ?? 8}
+          isOpen={true}
+          onClose={() => setInfoAssetId(null)}
+        />
+      );
+    })()}
+  </>
   );
 }

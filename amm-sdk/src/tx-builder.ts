@@ -19,6 +19,7 @@ import {
 } from './types';
 
 const DEFAULT_INVOKE_FEE = 900000;
+const ISSUE_INVOKE_FEE = 100500000; // Required when tx issues a new asset (1.005 DCC)
 
 function paymentAssetId(assetId: string | null | undefined): string | null {
   if (!assetId || assetId === DCC_ASSET_ID) return null;
@@ -27,10 +28,12 @@ function paymentAssetId(assetId: string | null | undefined): string | null {
 
 export class TxBuilder {
   private readonly dAppAddress: string;
+  private readonly routerAddress: string;
   private readonly chainId: string;
 
   constructor(config: AmmSdkConfig) {
     this.dAppAddress = config.dAppAddress;
+    this.routerAddress = config.routerAddress || config.dAppAddress;
     this.chainId = config.chainId;
   }
 
@@ -75,7 +78,7 @@ export class TxBuilder {
         { assetId: paymentAssetId(params.assetA), amount: Number(params.amountADesired) },
         { assetId: paymentAssetId(params.assetB), amount: Number(params.amountBDesired) },
       ],
-      fee: DEFAULT_INVOKE_FEE,
+      fee: ISSUE_INVOKE_FEE,
       chainId: this.chainId,
     };
   }
@@ -107,11 +110,11 @@ export class TxBuilder {
     };
   }
 
-  /** swapExactIn(assetIn, assetOut, feeBps, amountIn, minAmountOut, deadline) */
+  /** swapExactIn(assetIn, assetOut, feeBps, amountIn, minAmountOut, deadline) — targets Router */
   buildSwapExactIn(params: SwapExactInParamsV2): InvokeScriptTx {
     return {
       type: 16,
-      dApp: this.dAppAddress,
+      dApp: this.routerAddress,
       call: {
         function: 'swapExactIn',
         args: [

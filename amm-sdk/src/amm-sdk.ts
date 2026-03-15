@@ -52,7 +52,7 @@ export class AmmSdk {
   async getPoolByPair(
     assetA: string | null,
     assetB: string | null,
-    feeBps: number = 30
+    feeBps: number = 35
   ): Promise<PoolStateV2 | null> {
     return this.node.getPoolByPair(assetA, assetB, feeBps);
   }
@@ -74,16 +74,19 @@ export class AmmSdk {
 
   // ─── Quoting ─────────────────────────────────────────────────────
 
-  /** Compute a swap quote */
+  /** Compute a swap quote (auto-discovers fee tier if exact match not found) */
   async quoteSwap(
     amountIn: bigint,
     inputAssetId: string | null,
     outputAssetId: string | null,
-    feeBps: number = 30,
+    feeBps: number = 35,
     slippageBps: bigint = 50n
   ): Promise<SwapQuoteV2> {
     const poolId = getPoolId(inputAssetId, outputAssetId, feeBps);
-    const pool = await this.node.getPoolState(poolId);
+    let pool = await this.node.getPoolState(poolId);
+    if (!pool) {
+      pool = await this.node.findPoolForPair(inputAssetId, outputAssetId);
+    }
     if (!pool) throw new Error(`No pool found: ${poolId}`);
     if (pool.reserve0 === 0n) throw new Error('Pool has no liquidity');
 
@@ -104,7 +107,7 @@ export class AmmSdk {
     amountIn: bigint,
     inputAssetId: string | null,
     outputAssetId: string | null,
-    feeBps: number = 30,
+    feeBps: number = 35,
     slippageBps: bigint = 50n,
     deadlineMs: number = 0
   ): Promise<{ tx: InvokeScriptTx; quote: SwapQuoteV2 }> {
@@ -115,7 +118,7 @@ export class AmmSdk {
     const tx = this.tx.buildSwapExactIn({
       assetIn: normalizeAssetId(inputAssetId),
       assetOut: normalizeAssetId(outputAssetId),
-      feeBps,
+      feeBps: quote.feeBps,
       amountIn,
       minAmountOut: quote.minAmountOut,
       deadline,
@@ -130,7 +133,7 @@ export class AmmSdk {
     assetB: string | null,
     amountA: bigint,
     amountB: bigint,
-    feeBps: number = 30,
+    feeBps: number = 35,
     slippageBps: bigint = 50n,
     deadlineMs: number = 0
   ) {
@@ -143,8 +146,10 @@ export class AmmSdk {
       ? { lpMinted: estimateInitialLp(amountA, amountB).lpMinted, actualAmountA: amountA, actualAmountB: amountB, refundA: 0n, refundB: 0n }
       : estimateAddLiquidity(amountA, amountB, pool);
     const slippageFactor = 10000n - slippageBps;
-    const amountAMin = (amountA * slippageFactor) / 10000n;
-    const amountBMin = (amountB * slippageFactor) / 10000n;
+    // Min amounts based on estimated actuals (not desired), since the contract
+    // adjusts one side down to match the pool ratio.
+    const amountAMin = (estimate.actualAmountA * slippageFactor) / 10000n;
+    const amountBMin = (estimate.actualAmountB * slippageFactor) / 10000n;
 
     const deadline = deadlineMs || (Date.now() + 120_000);
 
@@ -166,7 +171,7 @@ export class AmmSdk {
   async buildRemoveLiquidity(
     assetA: string | null,
     assetB: string | null,
-    feeBps: number = 30,
+    feeBps: number = 35,
     lpAmount: bigint,
     slippageBps: bigint = 50n,
     deadlineMs: number = 0
@@ -199,7 +204,7 @@ export class AmmSdk {
   buildCreatePool(
     assetA: string | null,
     assetB: string | null,
-    feeBps: number = 30
+    feeBps: number = 35
   ) {
     const tx = this.tx.buildCreatePool({
       assetA: normalizeAssetId(assetA),

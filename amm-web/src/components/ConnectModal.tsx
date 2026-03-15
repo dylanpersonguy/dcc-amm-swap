@@ -5,7 +5,7 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useWallet } from '../context/WalletContext';
-import { libs } from '@waves/waves-transactions';
+import { libs } from '@decentralchain/transactions';
 import { config } from '../config';
 
 export function ConnectModal() {

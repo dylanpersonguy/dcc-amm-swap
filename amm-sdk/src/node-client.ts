@@ -7,7 +7,7 @@
  */
 
 import { AmmSdkConfig, DataEntry, PoolStateV2 } from './types';
-import { DCC_ASSET_ID, getPoolId } from '@dcc-amm/core';
+import { DCC_ASSET_ID, getPoolId, canonicalSort } from '@dcc-amm/core';
 
 export class NodeClient {
   private readonly nodeUrl: string;
@@ -96,7 +96,7 @@ export class NodeClient {
       reserve0: BigInt((map.get('r0')?.value as number) ?? 0),
       reserve1: BigInt((map.get('r1')?.value as number) ?? 0),
       lpSupply: BigInt((map.get('lpSupply')?.value as number) ?? 0),
-      feeBps: BigInt((map.get('fee')?.value as number) ?? 30),
+      feeBps: BigInt((map.get('fee')?.value as number) ?? 35),
       lastK: BigInt((map.get('lastK')?.value as number) ?? 0),
       createdAt: (map.get('createdAt')?.value as number) ?? 0,
       exists: true,
@@ -115,7 +115,7 @@ export class NodeClient {
   async getPoolByPair(
     assetA: string | null,
     assetB: string | null,
-    feeBps: number = 30
+    feeBps: number = 35
   ): Promise<PoolStateV2 | null> {
     const poolId = getPoolId(assetA, assetB, feeBps);
     return this.getPoolState(poolId);
@@ -144,6 +144,31 @@ export class NodeClient {
     const key = `lp:${poolId}:${address}`;
     const val = await this.getInteger(key);
     return val ?? 0n;
+  }
+
+  /**
+   * Find the best pool for a token pair across all fee tiers.
+   * Queries pool:exists:p:<t0>:<t1>:.* to discover any matching pool.
+   * Returns the pool with the most liquidity, or null if none exist.
+   */
+  async findPoolForPair(
+    assetA: string | null,
+    assetB: string | null
+  ): Promise<PoolStateV2 | null> {
+    const [t0, t1] = canonicalSort(assetA, assetB);
+    const pattern = `pool:exists:p:${t0}:${t1}:.*`;
+    const entries = await this.getDataEntries(pattern);
+    let best: PoolStateV2 | null = null;
+    for (const entry of entries) {
+      if ((entry.value as number) !== 1) continue;
+      const poolId = entry.key.replace('pool:exists:', '');
+      const state = await this.getPoolState(poolId);
+      if (!state || state.reserve0 === 0n) continue;
+      if (!best || state.reserve0 + state.reserve1 > best.reserve0 + best.reserve1) {
+        best = state;
+      }
+    }
+    return best;
   }
 
   /**

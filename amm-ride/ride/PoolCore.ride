@@ -1,0 +1,532 @@
+# ──────────────────────────────────────────────────────────────
+# DCC AMM — Pool Core Contract
+# Holds all pool state. Handles createPool, addLiquidity,
+# removeLiquidity, and applySwap (called by Router only).
+# ──────────────────────────────────────────────────────────────
+{-# STDLIB_VERSION 5 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+let VERSION       = 3
+let FeeScale      = 10000
+let minFeeBps     = 1
+let maxFeeBps     = 1000
+let defaultFeeBps = 35
+let minLiquidity  = 1000
+let dccStr        = "DCC"
+let lockedLpAddr  = "LOCKED"
+func getAssetString(assetId: ByteVector|Unit) = {
+  match assetId {
+    case b: ByteVector => b.toBase58String()
+    case _ => dccStr
+  }
+}
+func getAssetBytes(s: String) = {
+  if (s == dccStr) then unit else s.fromBase58String()
+}
+func tryGetInteger(key: String) = {
+  match getInteger(this, key) {
+    case x: Int => x
+    case _ => 0
+  }
+}
+func tryGetString(key: String) = {
+  match getString(this, key) {
+    case x: String => x
+    case _ => ""
+  }
+}
+func tryGetBoolean(key: String) = {
+  match getBoolean(this, key) {
+    case x: Boolean => x
+    case _ => false
+  }
+}
+func strLt(a: String, b: String) = {
+  let ab = toBytes(a)
+  let bb = toBytes(b)
+  let ia = toInt(ab, 0)
+  let ib = toInt(bb, 0)
+  if (ia != ib) then ia < ib
+  else {
+    let ia2 = toInt(ab, 8)
+    let ib2 = toInt(bb, 8)
+    ia2 < ib2
+  }
+}
+func canonicalOrder(a: String, b: String) = {
+  if (a == b) then throw("E_SAME_ASSET")
+  else if (a == dccStr) then (a, b)
+  else if (b == dccStr) then (b, a)
+  else if (strLt(a, b)) then (a, b) else (b, a)
+}
+func makePoolId(t0: String, t1: String, feeBps: Int) = {
+  "p:" + t0 + ":" + t1 + ":" + feeBps.toString()
+}
+func keyVersion()        = "v"
+func keyAdmin()          = "admin"
+func keyRouter()         = "router"
+func keyPaused()         = "paused"
+func keyMinLiquidity()   = "minLiquidity"
+func keyFeeBpsDefault()  = "feeBpsDefault"
+func keyPoolCount()      = "poolCount"
+func keyPoolExists(pid: String) = "pool:exists:" + pid
+func keyPoolT0(pid: String)     = "pool:t0:" + pid
+func keyPoolT1(pid: String)     = "pool:t1:" + pid
+func keyPoolFee(pid: String)    = "pool:fee:" + pid
+func keyPoolR0(pid: String)     = "pool:r0:" + pid
+func keyPoolR1(pid: String)     = "pool:r1:" + pid
+func keyPoolLpSupply(pid: String) = "pool:lpSupply:" + pid
+func keyPoolLastK(pid: String)  = "pool:lastK:" + pid
+func keyPoolCreatedAt(pid: String) = "pool:createdAt:" + pid
+func keyLpBalance(pid: String, addr: String) = "lp:" + pid + ":" + addr
+func keyPoolVolume0(pid: String)  = "pool:volume0:" + pid
+func keyPoolVolume1(pid: String)  = "pool:volume1:" + pid
+func keyPoolFees0(pid: String)    = "pool:fees0:" + pid
+func keyPoolFees1(pid: String)    = "pool:fees1:" + pid
+func keyPoolSwaps(pid: String)    = "pool:swaps:" + pid
+func keyPoolLiqEvents(pid: String) = "pool:liquidityEvents:" + pid
+func keyPoolLpAssetId(pid: String)  = "pool:lpAssetId:" + pid
+func keyLpTokenCount()             = "lpTokenCount"
+func keyLpClaimed(pid: String, addr: String) = "lpClaimed:" + pid + ":" + addr
+func keyEligibilityTracker() = "config:eligibilityTracker"
+func keyTreasury()             = "config:treasury"
+func keyProtocolFeePct()       = "config:protocolFeePct"
+func poolExists(pid: String)   = tryGetInteger(keyPoolExists(pid)) == 1
+func getR0(pid: String)        = tryGetInteger(keyPoolR0(pid))
+func getR1(pid: String)        = tryGetInteger(keyPoolR1(pid))
+func getLpSupply(pid: String)   = tryGetInteger(keyPoolLpSupply(pid))
+func getFeeBps(pid: String)    = tryGetInteger(keyPoolFee(pid))
+func getT0(pid: String)        = tryGetString(keyPoolT0(pid))
+func getT1(pid: String)        = tryGetString(keyPoolT1(pid))
+func getLpBalance(pid: String, addr: String) = tryGetInteger(keyLpBalance(pid, addr))
+func getPoolLpAssetId(pid: String) = tryGetString(keyPoolLpAssetId(pid))
+func isPaused()       = tryGetBoolean(keyPaused())
+func getAdmin()       = tryGetString(keyAdmin())
+func getRouter()      = tryGetString(keyRouter())
+func getTrackerAddr() = tryGetString(keyEligibilityTracker())
+func getTreasury()    = tryGetString(keyTreasury())
+func getProtocolFeePct() = tryGetInteger(keyProtocolFeePct())
+func must(condition: Boolean, err: String) = {
+  if (!condition) then throw(err) else true
+}
+func isqrt(n: Int) = {
+  if (n < 0) then throw("E_SQRT_NEG")
+  else if (n == 0) then 0
+  else if (n <= 3) then 1
+  else {
+    # Smart starting estimate — within ~10x of sqrt(n) for any 64-bit input
+    let x0 = if (n >= 1000000000000000000) then n / 1000000000
+      else if (n >= 10000000000000000) then n / 100000000
+      else if (n >= 1000000000000) then n / 1000000
+      else if (n >= 100000000) then n / 10000
+      else if (n >= 10000) then n / 100
+      else n
+    let y0 = (x0 + n / x0) / 2
+    let x1  = if (y0 < x0) then y0 else x0
+    let y1  = (x1 + n / x1) / 2
+    let x2  = if (y1 < x1) then y1 else x1
+    let y2  = (x2 + n / x2) / 2
+    let x3  = if (y2 < x2) then y2 else x2
+    let y3  = (x3 + n / x3) / 2
+    let x4  = if (y3 < x3) then y3 else x3
+    let y4  = (x4 + n / x4) / 2
+    let x5  = if (y4 < x4) then y4 else x4
+    let y5  = (x5 + n / x5) / 2
+    let x6  = if (y5 < x5) then y5 else x5
+    let y6  = (x6 + n / x6) / 2
+    let x7  = if (y6 < x6) then y6 else x6
+    let y7  = (x7 + n / x7) / 2
+    let x8  = if (y7 < x7) then y7 else x7
+    let y8  = (x8 + n / x8) / 2
+    let x9  = if (y8 < x8) then y8 else x8
+    let y9  = (x9 + n / x9) / 2
+    let x10 = if (y9 < x9) then y9 else x9
+    let y10 = (x10 + n / x10) / 2
+    let x11 = if (y10 < x10) then y10 else x10
+    let y11 = (x11 + n / x11) / 2
+    let x12 = if (y11 < x11) then y11 else x11
+    let y12 = (x12 + n / x12) / 2
+    let x13 = if (y12 < x12) then y12 else x12
+    let y13 = (x13 + n / x13) / 2
+    let x14 = if (y13 < x13) then y13 else x13
+    let y14 = (x14 + n / x14) / 2
+    let x15 = if (y14 < x14) then y14 else x14
+    let y15 = (x15 + n / x15) / 2
+    let x16 = if (y15 < x15) then y15 else x15
+    x16
+  }
+}
+# Overflow-safe sqrt(a * b): avoids a*b product exceeding Int64
+func sqrtProduct(a: Int, b: Int) = {
+  if (a == 0 || b == 0) then 0
+  else {
+    let sa = isqrt(a)
+    let sb = isqrt(b)
+    let approx = sa * sb
+    if (approx > 0 && fraction(approx + 1, approx + 1, a) <= b) then approx + 1
+    else approx
+  }
+}
+# Overflow-safe K invariant check: newR0*newR1 >= prevR0*prevR1
+func kNotDecreased(newR0: Int, newR1: Int, prevR0: Int, prevR1: Int) = {
+  if (prevR0 == 0 || prevR1 == 0) then true
+  else fraction(newR0, newR1, prevR0) >= prevR1
+}
+func paymentAmount(payments: List[AttachedPayment], assetStr: String) = {
+  let assetBytes = getAssetBytes(assetStr)
+  func finder(accum: Int, pmt: AttachedPayment) = {
+    if (pmt.assetId == assetBytes) then pmt.amount else accum
+  }
+  let result = FOLD<10>(payments, -1, finder)
+  if (result == -1) then throw("E_NO_PMT: " + assetStr)
+  else result
+}
+func mapAmountsToTokens(assetA: String, assetB: String, amountA: Int, amountB: Int, t0: String, t1: String) = {
+  if (assetA == t0 && assetB == t1) then (amountA, amountB)
+  else if (assetA == t1 && assetB == t0) then (amountB, amountA)
+  else throw("E_ASSET_MISMATCH")
+}
+# ── createPool ──────────────────────────────────────────────
+@Callable(i)
+func createPool(assetA: String, assetB: String, feeBps: Int) = {
+  strict chkNp = must(!isPaused(), "E_PAUSED")
+  strict chkDiff = must(assetA != assetB, "E_SAME_ASSET")
+  strict chkFeeMin = must(feeBps >= minFeeBps, "E_FEE_LOW")
+  strict chkFeeMax = must(feeBps <= maxFeeBps, "E_FEE_HIGH")
+  strict chkA = must(assetA.size() > 0, "E_EMPTY_A")
+  strict chkB = must(assetB.size() > 0, "E_EMPTY_B")
+  strict chkAExists = if (assetA != dccStr) then {
+    match assetInfo(assetA.fromBase58String()) {
+      case info: Asset => must(!info.scripted, "E_SCRIPTED: " + assetA)
+      case _ => throw("E_NOT_FOUND: " + assetA)
+    }
+  } else true
+  strict chkBExists = if (assetB != dccStr) then {
+    match assetInfo(assetB.fromBase58String()) {
+      case info: Asset => must(!info.scripted, "E_SCRIPTED: " + assetB)
+      case _ => throw("E_NOT_FOUND: " + assetB)
+    }
+  } else true
+  let (t0, t1) = canonicalOrder(assetA, assetB)
+  let pid = makePoolId(t0, t1, feeBps)
+  strict chkExists = must(!poolExists(pid), "E_POOL_EXISTS: " + pid)
+  let poolCount = tryGetInteger(keyPoolCount())
+  [
+    IntegerEntry(keyPoolExists(pid), 1),
+    StringEntry(keyPoolT0(pid), t0),
+    StringEntry(keyPoolT1(pid), t1),
+    IntegerEntry(keyPoolFee(pid), feeBps),
+    IntegerEntry(keyPoolR0(pid), 0),
+    IntegerEntry(keyPoolR1(pid), 0),
+    IntegerEntry(keyPoolLpSupply(pid), 0),
+    IntegerEntry(keyPoolLastK(pid), 0),
+    IntegerEntry(keyPoolCreatedAt(pid), lastBlock.timestamp),
+    IntegerEntry(keyPoolVolume0(pid), 0),
+    IntegerEntry(keyPoolVolume1(pid), 0),
+    IntegerEntry(keyPoolFees0(pid), 0),
+    IntegerEntry(keyPoolFees1(pid), 0),
+    IntegerEntry(keyPoolSwaps(pid), 0),
+    IntegerEntry(keyPoolLiqEvents(pid), 0),
+    IntegerEntry(keyPoolCount(), poolCount + 1)
+  ]
+}
+# ── addLiquidity ────────────────────────────────────────────
+@Callable(i)
+func addLiquidity(
+  assetA: String, assetB: String, feeBps: Int,
+  amountADesired: Int, amountBDesired: Int,
+  amountAMin: Int, amountBMin: Int,
+  deadline: Int
+) = {
+  strict chkNp = must(!isPaused(), "E_PAUSED")
+  strict chkDl = must(lastBlock.timestamp <= deadline, "E_DEADLINE")
+  strict chkAPos = must(amountADesired > 0, "E_ZERO_A")
+  strict chkBPos = must(amountBDesired > 0, "E_ZERO_B")
+  let (t0, t1) = canonicalOrder(assetA, assetB)
+  let pid = makePoolId(t0, t1, feeBps)
+  strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
+  let (desired0, desired1) = mapAmountsToTokens(assetA, assetB, amountADesired, amountBDesired, t0, t1)
+  let (min0, min1) = mapAmountsToTokens(assetA, assetB, amountAMin, amountBMin, t0, t1)
+  let pay0 = paymentAmount(i.payments, t0)
+  let pay1 = paymentAmount(i.payments, t1)
+  strict chkPay0 = must(pay0 >= desired0, "E_LOW_PMT: " + t0)
+  strict chkPay1 = must(pay1 >= desired1, "E_LOW_PMT: " + t1)
+  let res0 = getR0(pid)
+  let res1 = getR1(pid)
+  let supply = getLpSupply(pid)
+  let callerAddr = i.caller.toString()
+  let actions = if (res0 == 0 && res1 == 0 && supply == 0) then {
+    let sqrtK = sqrtProduct(desired0, desired1)
+    strict chkLiq = must(sqrtK > minLiquidity, "E_LOW_LIQ")
+    let lpMinted = sqrtK - minLiquidity
+    let refund0 = pay0 - desired0
+    let refund1 = pay1 - desired1
+    let lpNum = tryGetInteger(keyLpTokenCount()) + 1
+    let lpTokenName = "LP-DCC-" + lpNum.toString()
+    let lpTokenDesc = "DCC AMM LP | " + pid
+    let issueAction = Issue(lpTokenName, lpTokenDesc, sqrtK, 8, true)
+    let lpAssetId = calculateAssetId(issueAction)
+    let burnLocked = Burn(lpAssetId, minLiquidity)
+    let baseActions = [
+      issueAction,
+      burnLocked,
+      StringEntry(keyPoolLpAssetId(pid), lpAssetId.toBase58String()),
+      IntegerEntry(keyLpTokenCount(), lpNum),
+      IntegerEntry(keyPoolR0(pid), desired0),
+      IntegerEntry(keyPoolR1(pid), desired1),
+      IntegerEntry(keyPoolLpSupply(pid), sqrtK),
+      IntegerEntry(keyPoolLastK(pid), 0),
+      IntegerEntry(keyLpBalance(pid, lockedLpAddr), minLiquidity),
+      IntegerEntry(keyLpBalance(pid, callerAddr), lpMinted),
+      IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1),
+      ScriptTransfer(i.caller, lpMinted, lpAssetId),
+      BooleanEntry(keyLpClaimed(pid, callerAddr), true)
+    ]
+    let w0 = if (refund0 > 0) then baseActions :+ ScriptTransfer(i.caller, refund0, getAssetBytes(t0)) else baseActions
+    if (refund1 > 0) then w0 :+ ScriptTransfer(i.caller, refund1, getAssetBytes(t1)) else w0
+  } else {
+    let b1Optimal = fraction(desired0, res1, res0)
+    let (used0, used1) = if (b1Optimal <= desired1) then {
+      (desired0, b1Optimal)
+    } else {
+      let a0Optimal = fraction(desired1, res0, res1)
+      (a0Optimal, desired1)
+    }
+    strict chkMin0 = must(used0 >= min0, "E_SLIP_0")
+    strict chkMin1 = must(used1 >= min1, "E_SLIP_1")
+    strict chkUsed = must(used0 > 0 && used1 > 0, "E_ZERO_USED")
+    let lp0 = fraction(used0, supply, res0)
+    let lp1 = fraction(used1, supply, res1)
+    let lpMinted = if (lp0 < lp1) then lp0 else lp1
+    strict chkLpPos = must(lpMinted > 0, "E_DUST")
+    let newR0 = res0 + used0
+    let newR1 = res1 + used1
+    let newSupply = supply + lpMinted
+    let currentLp = getLpBalance(pid, callerAddr)
+    let refund0 = pay0 - used0
+    let refund1 = pay1 - used1
+    let lpAssetIdStr = getPoolLpAssetId(pid)
+    let lpActions = if (lpAssetIdStr != "") then {
+      let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
+      [
+        Reissue(lpAssetIdBytes, lpMinted, true),
+        ScriptTransfer(i.caller, lpMinted, lpAssetIdBytes)
+      ]
+    } else {
+      let lpNum = tryGetInteger(keyLpTokenCount()) + 1
+      let lpTokenName = "LP-DCC-" + lpNum.toString()
+      let lpTokenDesc = "DCC AMM LP | " + pid
+      let issueAction = Issue(lpTokenName, lpTokenDesc, supply + lpMinted, 8, true)
+      let lpAssetId = calculateAssetId(issueAction)
+      [
+        issueAction,
+        StringEntry(keyPoolLpAssetId(pid), lpAssetId.toBase58String()),
+        IntegerEntry(keyLpTokenCount(), lpNum),
+        ScriptTransfer(i.caller, lpMinted, lpAssetId)
+      ]
+    }
+    let lpBalUpdate = if (lpAssetIdStr != "") then nil
+      else [IntegerEntry(keyLpBalance(pid, callerAddr), currentLp + lpMinted)]
+    let base = [
+      IntegerEntry(keyPoolR0(pid), newR0),
+      IntegerEntry(keyPoolR1(pid), newR1),
+      IntegerEntry(keyPoolLpSupply(pid), newSupply),
+      IntegerEntry(keyPoolLastK(pid), 0),
+      IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1)
+    ] ++ lpBalUpdate ++ lpActions
+    let w0 = if (refund0 > 0) then base :+ ScriptTransfer(i.caller, refund0, getAssetBytes(t0)) else base
+    if (refund1 > 0) then w0 :+ ScriptTransfer(i.caller, refund1, getAssetBytes(t1)) else w0
+  }
+  let ta = getTrackerAddr()
+  let trackTarget = if (ta != "") then Address(ta.fromBase58String()) else this
+  let trackFunc = if (ta != "") then "recordLpAdd" else "noOp"
+  let trackArgs = if (ta != "") then [callerAddr, pid, this.toString()] else []
+  strict trackLpAdd = invoke(trackTarget, trackFunc, trackArgs, [])
+  actions
+}
+# ── removeLiquidity ─────────────────────────────────────────
+@Callable(i)
+func removeLiquidity(
+  assetA: String, assetB: String, feeBps: Int,
+  lpAmount: Int,
+  amountAMin: Int, amountBMin: Int,
+  deadline: Int
+) = {
+  strict chkDl = must(lastBlock.timestamp <= deadline, "E_DEADLINE")
+  strict chkLpPos = must(lpAmount > 0, "E_ZERO_LP")
+  let (t0, t1) = canonicalOrder(assetA, assetB)
+  let pid = makePoolId(t0, t1, feeBps)
+  strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
+  let callerAddr = i.caller.toString()
+  let userLp = getLpBalance(pid, callerAddr)
+  let lpAssetIdStr = getPoolLpAssetId(pid)
+  let hasLpToken = lpAssetIdStr != ""
+  let lpPaid = if (hasLpToken) then {
+    let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
+    func lpFinder(accum: Int, pmt: AttachedPayment) = {
+      if (pmt.assetId == lpAssetIdBytes) then pmt.amount else accum
+    }
+    let found = FOLD<10>(i.payments, -1, lpFinder)
+    if (found == -1) then throw("E_NO_LP_PMT")
+    else found
+  } else 0
+  strict chkLpPaid = if (hasLpToken) then {
+    must(lpPaid >= lpAmount, "E_LOW_LP_PMT")
+  } else {
+    must(userLp >= lpAmount, "E_LOW_LP")
+  }
+  let res0 = getR0(pid)
+  let res1 = getR1(pid)
+  let supply = getLpSupply(pid)
+  let amount0Out = fraction(lpAmount, res0, supply)
+  let amount1Out = fraction(lpAmount, res1, supply)
+  strict chkNz = must(amount0Out > 0 || amount1Out > 0, "E_DUST")
+  let (amtAOut, amtBOut) = mapAmountsToTokens(t0, t1, amount0Out, amount1Out, assetA, assetB)
+  let (userAOut, userBOut) = if (assetA == t0) then (amount0Out, amount1Out) else (amount1Out, amount0Out)
+  strict chkSlipA = must(userAOut >= amountAMin, "E_SLIP_A")
+  strict chkSlipB = must(userBOut >= amountBMin, "E_SLIP_B")
+  let newR0 = res0 - amount0Out
+  let newR1 = res1 - amount1Out
+  let newSupply = supply - lpAmount
+  strict chkResNeg = must(newR0 >= 0 && newR1 >= 0, "E_NEG_RESERVE")
+  let lpBurnActions = if (hasLpToken) then {
+    let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
+    let refundLp = lpPaid - lpAmount
+    let ba = [Burn(lpAssetIdBytes, lpAmount)]
+    if (refundLp > 0) then ba :+ ScriptTransfer(i.caller, refundLp, lpAssetIdBytes) else ba
+  } else nil
+  let lpBalActions = if (hasLpToken) then nil
+    else [IntegerEntry(keyLpBalance(pid, callerAddr), userLp - lpAmount)]
+  let stillHasLpInThisPool = if (hasLpToken) then false else (userLp - lpAmount) > 0
+  let stillHasAnyLp = stillHasLpInThisPool
+  let removeActions = [
+    IntegerEntry(keyPoolR0(pid), newR0),
+    IntegerEntry(keyPoolR1(pid), newR1),
+    IntegerEntry(keyPoolLpSupply(pid), newSupply),
+    IntegerEntry(keyPoolLastK(pid), 0),
+    IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1),
+    ScriptTransfer(i.caller, amount0Out, getAssetBytes(t0)),
+    ScriptTransfer(i.caller, amount1Out, getAssetBytes(t1))
+  ] ++ lpBalActions ++ lpBurnActions
+  let ta3 = getTrackerAddr()
+  let trackTarget3 = if (ta3 != "") then Address(ta3.fromBase58String()) else this
+  let trackFunc3 = if (ta3 != "") then "recordLpRemove" else "noOp"
+  let trackArgs3 = if (ta3 != "") then [callerAddr, pid, this.toString(), stillHasAnyLp, stillHasLpInThisPool] else []
+  strict trackLpRemove = invoke(trackTarget3, trackFunc3, trackArgs3, [])
+  removeActions
+}
+# ── applySwap — called by Router contract only ─────────────
+@Callable(i)
+func applySwap(
+  pid: String,
+  newR0: Int, newR1: Int, newK: Int,
+  amountOut: Int, outAsset: String,
+  recipient: String,
+  vol0Delta: Int, vol1Delta: Int,
+  fee0Delta: Int, fee1Delta: Int
+) = {
+  strict chkRouter = must(i.caller.toString() == getRouter(), "E_NOT_ROUTER")
+  strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
+  let prevR0 = getR0(pid)
+  let prevR1 = getR1(pid)
+  strict chkK = must(kNotDecreased(newR0, newR1, prevR0, prevR1), "E_K_DECREASED")
+  [
+    IntegerEntry(keyPoolR0(pid), newR0),
+    IntegerEntry(keyPoolR1(pid), newR1),
+    IntegerEntry(keyPoolLastK(pid), 0),
+    IntegerEntry(keyPoolVolume0(pid), tryGetInteger(keyPoolVolume0(pid)) + vol0Delta),
+    IntegerEntry(keyPoolVolume1(pid), tryGetInteger(keyPoolVolume1(pid)) + vol1Delta),
+    IntegerEntry(keyPoolFees0(pid), tryGetInteger(keyPoolFees0(pid)) + fee0Delta),
+    IntegerEntry(keyPoolFees1(pid), tryGetInteger(keyPoolFees1(pid)) + fee1Delta),
+    IntegerEntry(keyPoolSwaps(pid), tryGetInteger(keyPoolSwaps(pid)) + 1),
+    ScriptTransfer(Address(recipient.fromBase58String()), amountOut, getAssetBytes(outAsset))
+  ]
+}
+# ── lockLiquidity — permanently lock LP tokens ─────────────
+@Callable(i)
+func lockLiquidity(assetA: String, assetB: String, feeBps: Int) = {
+  let (t0, t1) = canonicalOrder(assetA, assetB)
+  let pid = makePoolId(t0, t1, feeBps)
+  strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
+  let lpAssetIdStr = getPoolLpAssetId(pid)
+  strict chkLp = must(lpAssetIdStr != "", "E_NO_LP_TOKEN")
+  let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
+  func lpFinder(accum: Int, pmt: AttachedPayment) = {
+    if (pmt.assetId == lpAssetIdBytes) then pmt.amount else accum
+  }
+  let lpAmount = FOLD<10>(i.payments, -1, lpFinder)
+  strict chkAmt = must(lpAmount > 0, "E_ZERO_LP")
+  [
+    Burn(lpAssetIdBytes, lpAmount),
+    IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1)
+  ]
+}
+# ── claimLpTokens — claim real LP tokens for legacy positions
+@Callable(i)
+func claimLpTokens(assetA: String, assetB: String, feeBps: Int) = {
+  let (t0, t1) = canonicalOrder(assetA, assetB)
+  let pid = makePoolId(t0, t1, feeBps)
+  strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
+  let lpAssetIdStr = getPoolLpAssetId(pid)
+  strict chkLp = must(lpAssetIdStr != "", "E_NO_LP_TOKEN")
+  let callerAddr = i.caller.toString()
+  let claimedKey = keyLpClaimed(pid, callerAddr)
+  strict chkNotClaimed = must(!tryGetBoolean(claimedKey), "E_ALREADY_CLAIMED")
+  let internalBalance = getLpBalance(pid, callerAddr)
+  strict chkHasBal = must(internalBalance > 0, "E_NO_LP_BAL")
+  let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
+  [
+    ScriptTransfer(i.caller, internalBalance, lpAssetIdBytes),
+    BooleanEntry(claimedKey, true),
+    IntegerEntry(keyLpBalance(pid, callerAddr), 0)
+  ]
+}
+# ── Admin functions ─────────────────────────────────────────
+@Callable(i)
+func noOp() = {
+  nil
+}
+@Callable(i)
+func setEligibilityTracker(address: String) = {
+  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  [StringEntry(keyEligibilityTracker(), address)]
+}
+@Callable(i)
+func setTreasury(address: String) = {
+  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  [StringEntry(keyTreasury(), address)]
+}
+@Callable(i)
+func setProtocolFee(pct: Int) = {
+  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  strict chkRange = must(pct >= 0 && pct <= 5000, "E_FEE_RANGE")
+  [IntegerEntry(keyProtocolFeePct(), pct)]
+}
+@Callable(i)
+func pause() = {
+  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  [BooleanEntry(keyPaused(), true)]
+}
+@Callable(i)
+func unpause() = {
+  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  [BooleanEntry(keyPaused(), false)]
+}
+@Callable(i)
+func setRouter(routerAddr: String) = {
+  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  [StringEntry(keyRouter(), routerAddr)]
+}
+@Callable(i)
+func initialize(adminAddr: String) = {
+  strict chkSelf = must(i.caller == this, "E_NOT_SELF")
+  strict chkNotInit = must(tryGetInteger(keyVersion()) == 0, "E_ALREADY_INIT")
+  [
+    IntegerEntry(keyVersion(), VERSION),
+    StringEntry(keyAdmin(), adminAddr),
+    IntegerEntry(keyMinLiquidity(), minLiquidity),
+    IntegerEntry(keyFeeBpsDefault(), defaultFeeBps)
+  ]
+}
+@Verifier(tx)
+func verify() = sigVerify(tx.bodyBytes, tx.proofs[0], tx.senderPublicKey)

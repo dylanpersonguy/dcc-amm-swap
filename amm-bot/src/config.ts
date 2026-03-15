@@ -3,7 +3,7 @@
  */
 
 import path from 'path';
-import { libs } from '@waves/waves-transactions';
+import { libs } from '@decentralchain/transactions';
 
 const PKG_ROOT = path.resolve(__dirname, '..');
 
@@ -31,8 +31,8 @@ export const config = {
   /** Default slippage in bps (0.5%) */
   defaultSlippageBps: 50,
 
-  /** Default fee tier in bps (0.3%) */
-  defaultFeeBps: 30,
+  /** Default fee tier in bps (0.35%) */
+  defaultFeeBps: 35,
 
   /** Transaction deadline in ms (2 min) */
   deadlineMs: 120_000,

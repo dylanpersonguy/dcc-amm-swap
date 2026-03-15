@@ -1,9 +1,9 @@
 /**
  * Wallet service — create, import, and manage DCC wallets.
- * Uses @waves/waves-transactions for key derivation.
+ * Uses @decentralchain/transactions for key derivation.
  */
 
-import { libs } from '@waves/waves-transactions';
+import { libs } from '@decentralchain/transactions';
 import { config } from '../config';
 import {
   createWallet as dbCreateWallet,

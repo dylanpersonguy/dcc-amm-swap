@@ -1,9 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useWallet } from '../context/WalletContext';
+import { useToasts } from '../context/ToastContext';
 import { config } from '../config';
 
-export function Header() {
+interface HeaderProps {
+  onMenuToggle?: () => void;
+}
+
+export function Header({ onMenuToggle }: HeaderProps) {
   const wallet = useWallet();
+  const { soundEnabled, toggleSound } = useToasts();
   const [showMenu, setShowMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -34,18 +40,14 @@ export function Header() {
   return (
     <header className="header">
       <div className="logo-group">
-        <div className="logo-mark">
-          <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
-            <rect width="32" height="32" rx="8" fill="url(#logo-grad)"/>
-            <path d="M10 20L16 8l6 12H10z" fill="white" fillOpacity="0.9"/>
-            <defs>
-              <linearGradient id="logo-grad" x1="0" y1="0" x2="32" y2="32">
-                <stop stopColor="#7c5cfc"/>
-                <stop offset="0.5" stopColor="#6d9fff"/>
-                <stop offset="1" stopColor="#5cefd6"/>
-              </linearGradient>
-            </defs>
+        {/* Mobile hamburger */}
+        <button className="hamburger-btn" onClick={onMenuToggle} aria-label="Open menu">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
           </svg>
+        </button>
+        <div className="logo-mark">
+          <img src="/logo.png" alt="DCC Swap" width="28" height="28" style={{ borderRadius: 8 }} />
         </div>
         <div className="logo-text">
           <h1>DCC Swap</h1>
@@ -54,6 +56,23 @@ export function Header() {
       </div>
 
       <div className="header-right">
+        {/* Sound toggle */}
+        <button
+          className={`icon-btn sound-toggle ${soundEnabled ? 'active' : ''}`}
+          onClick={toggleSound}
+          title={soundEnabled ? 'Sound on' : 'Sound off'}
+          aria-label="Toggle sound"
+        >
+          {soundEnabled ? (
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M8 2L4 6H2v4h2l4 4V2zM11 5a3.5 3.5 0 010 6M13 3a6.5 6.5 0 010 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M8 2L4 6H2v4h2l4 4V2zM12 5l-4 6M8 5l4 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          )}
+        </button>
         {wallet.isConnected ? (
           <div className="wallet-connected-group" ref={menuRef}>
             <button

@@ -124,6 +124,8 @@ export interface SwapExactInParamsV2 {
 export interface AmmSdkConfig {
   nodeUrl: string;
   dAppAddress: string;
+  /** Router contract address (for swaps). Falls back to dAppAddress if not set. */
+  routerAddress?: string;
   chainId: string;
 }
 

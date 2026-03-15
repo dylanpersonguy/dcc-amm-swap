@@ -210,7 +210,7 @@ export function registerTokenDetectHandlers(bot: Bot) {
       `🏊 <b>Create Pool</b>\n\n` +
         `Token: <b>${tokenName}</b>\n` +
         `Asset ID: <code>${assetId}</code>\n\n` +
-        `This will create a DCC / ${tokenName} pool with 0.3% fee tier.\n\n` +
+        `This will create a DCC / ${tokenName} pool with 0.35% fee tier.\n\n` +
         `⚠️ After creating the pool, you'll need to add initial liquidity.\n\n` +
         `Continue?`,
       {
@@ -238,7 +238,7 @@ export function registerTokenDetectHandlers(bot: Bot) {
     }).catch(() => {});
 
     try {
-      const { invokeScript, broadcast, waitForTx } = await import('@waves/waves-transactions');
+      const { invokeScript, broadcast, waitForTx } = await import('@decentralchain/transactions');
       const { config } = await import('../config');
       const { getWalletSeed } = await import('../db');
 
@@ -270,7 +270,7 @@ export function registerTokenDetectHandlers(bot: Bot) {
 
       await ctx.editMessageText(
         `✅ <b>Pool Created!</b>\n\n` +
-          `🏊 DCC / ${tokenName} (0.3% fee)\n` +
+          `🏊 DCC / ${tokenName} (0.35% fee)\n` +
           `🔗 TX: <code>${signedTx.id}</code>\n\n` +
           `<i>The pool is empty. Add liquidity to start trading!</i>`,
         {

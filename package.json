@@ -15,14 +15,14 @@
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
-    "clean": "npm run clean --workspaces --if-present"
+    "clean": "npm run clean --workspaces --if-present",
+    "postinstall": "node scripts/postinstall.js"
   },
   "engines": {
     "node": ">=18.0.0"
   },
   "license": "MIT",
   "devDependencies": {
-    "@decentralchain/waves-transactions": "^4.2.6",
-    "@waves/waves-transactions": "^4.3.11"
+    "@decentralchain/transactions": "^5.0.0"
   }
 }

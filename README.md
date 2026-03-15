@@ -117,7 +117,7 @@ amountOut = ⌊amountInWithFee × reserveOut / (reserveIn × 10 000 + amountInWi
 
 | Parameter | Value |
 |-----------|-------|
-| Default fee | 30 bps (0.30%) |
+| Default fee | 35 bps (0.35%) |
 | Fee range | 1–1000 bps (0.01%–10%) |
 | Fee recipient | 100% to LPs (retained in reserves) |
 | Fee tiers | Same pair + different fee = different pool |

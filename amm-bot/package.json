@@ -13,7 +13,7 @@
   "dependencies": {
     "@dcc-amm/sdk": "1.0.0",
     "@dcc-amm/core": "1.0.0",
-    "@waves/waves-transactions": "^4.3.11",
+    "@decentralchain/transactions": "^5.0.0",
     "grammy": "^1.21.0",
     "better-sqlite3": "^11.0.0",
     "dotenv": "^16.4.0"

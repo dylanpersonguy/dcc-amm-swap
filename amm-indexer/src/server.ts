@@ -147,6 +147,7 @@ export function startServer(
   const sdk = new AmmSdk({
     nodeUrl: config.nodeUrl,
     dAppAddress: config.dAppAddress,
+    routerAddress: process.env.ROUTER_ADDRESS || config.dAppAddress,
     chainId: 'D',
   });
 
@@ -236,7 +237,7 @@ export function startServer(
           BigInt(amountIn),
           normalizeAsset(assetIn),
           normalizeAsset(assetOut),
-          parseInt(feeBps || '30'),
+          parseInt(feeBps || '35'),
           BigInt(slippageBps || '50')
         );
         return json(res, quote);
@@ -252,7 +253,7 @@ export function startServer(
           normalizeAsset(assetB),
           BigInt(amountA),
           BigInt(amountB),
-          parseInt(feeBps || '30')
+          parseInt(feeBps || '35')
         );
         return json(res, { estimate: result.estimate });
       }
@@ -265,7 +266,7 @@ export function startServer(
         const result = await sdk.buildRemoveLiquidity(
           normalizeAsset(assetA),
           normalizeAsset(assetB),
-          parseInt(feeBps || '30'),
+          parseInt(feeBps || '35'),
           BigInt(lpAmount)
         );
         return json(res, { estimate: result.estimate });
@@ -289,7 +290,7 @@ export function startServer(
             BigInt(amountIn),
             normalizeAsset(assetIn),
             normalizeAsset(assetOut),
-            parseInt(feeBps || '30'),
+            parseInt(feeBps || '35'),
             BigInt(slippageBps || '50'),
             deadline ? parseInt(deadline) : 0
           );
@@ -306,7 +307,7 @@ export function startServer(
             normalizeAsset(assetB),
             BigInt(amountA),
             BigInt(amountB),
-            parseInt(feeBps || '30'),
+            parseInt(feeBps || '35'),
             BigInt(slippageBps || '50'),
             deadline ? parseInt(deadline) : 0
           );
@@ -321,7 +322,7 @@ export function startServer(
           const result = await sdk.buildRemoveLiquidity(
             normalizeAsset(assetA),
             normalizeAsset(assetB),
-            parseInt(feeBps || '30'),
+            parseInt(feeBps || '35'),
             BigInt(lpAmount),
             BigInt(slippageBps || '50'),
             deadline ? parseInt(deadline) : 0
@@ -337,7 +338,7 @@ export function startServer(
           const result = sdk.buildCreatePool(
             normalizeAsset(assetA),
             normalizeAsset(assetB),
-            parseInt(feeBps || '30')
+            parseInt(feeBps || '35')
           );
           return json(res, result);
         }
@@ -416,7 +417,7 @@ export function startServer(
 // Run if executed directly
 if (require.main === module) {
   const config: IndexerConfig = {
-    nodeUrl: process.env.NODE_URL || 'https://nodes.decentralchain.io',
+    nodeUrl: process.env.NODE_URL || 'https://mainnet-node.decentralchain.io',
     dAppAddress: process.env.DAPP_ADDRESS || '',
     pollIntervalMs: parseInt(process.env.POLL_INTERVAL || '10000'),
     dataDir: process.env.DATA_DIR || './data',

@@ -11,8 +11,8 @@ export const MINIMUM_LIQUIDITY = 1000n;
 /** Basis-point denominator (10000 = 100%) */
 export const BPS_DENOMINATOR = 10000n;
 
-/** Default fee in basis points (30 = 0.3%) */
-export const DEFAULT_FEE_BPS = 30n;
+/** Default fee in basis points (35 = 0.35%) */
+export const DEFAULT_FEE_BPS = 35n;
 
 /** Minimum allowed fee in basis points (1 = 0.01%) */
 export const MIN_FEE_BPS = 1n;

@@ -16,6 +16,7 @@
     "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true,
     "forceConsistentCasingInFileNames": true,
+    "types": ["vite/client"],
     "paths": {
       "@dcc-amm/core": ["../amm-core/src/index.ts"],
       "@dcc-amm/sdk": ["../amm-sdk/src/index.ts"]

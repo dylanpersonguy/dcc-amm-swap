@@ -1,0 +1,200 @@
+# ──────────────────────────────────────────────────────────────
+# DCC AMM — Swap Router Contract
+# Stateless router. Reads Core state, computes AMM math,
+# forwards swap results to Core via applySwap().
+# Also provides read-only query functions.
+# ──────────────────────────────────────────────────────────────
+{-# STDLIB_VERSION 5 #-}
+{-# CONTENT_TYPE DAPP #-}
+{-# SCRIPT_TYPE ACCOUNT #-}
+let VERSION   = 1
+let FeeScale  = 10000
+let dccStr    = "DCC"
+func getAssetBytes(s: String) = {
+  if (s == dccStr) then unit else s.fromBase58String()
+}
+func tryGetIntegerFrom(addr: Address, key: String) = {
+  match getInteger(addr, key) {
+    case x: Int => x
+    case _ => 0
+  }
+}
+func tryGetStringFrom(addr: Address, key: String) = {
+  match getString(addr, key) {
+    case x: String => x
+    case _ => ""
+  }
+}
+func tryGetBooleanFrom(addr: Address, key: String) = {
+  match getBoolean(addr, key) {
+    case x: Boolean => x
+    case _ => false
+  }
+}
+func must(condition: Boolean, err: String) = {
+  if (!condition) then throw(err) else true
+}
+func strLt(a: String, b: String) = {
+  let ab = toBytes(a)
+  let bb = toBytes(b)
+  let ia = toInt(ab, 0)
+  let ib = toInt(bb, 0)
+  if (ia != ib) then ia < ib
+  else {
+    let ia2 = toInt(ab, 8)
+    let ib2 = toInt(bb, 8)
+    ia2 < ib2
+  }
+}
+func canonicalOrder(a: String, b: String) = {
+  if (a == b) then throw("E_SAME_ASSET")
+  else if (a == dccStr) then (a, b)
+  else if (b == dccStr) then (b, a)
+  else if (strLt(a, b)) then (a, b) else (b, a)
+}
+func makePoolId(t0: String, t1: String, feeBps: Int) = {
+  "p:" + t0 + ":" + t1 + ":" + feeBps.toString()
+}
+# Key functions — must match Core contract exactly
+func keyPoolExists(pid: String) = "pool:exists:" + pid
+func keyPoolR0(pid: String)     = "pool:r0:" + pid
+func keyPoolR1(pid: String)     = "pool:r1:" + pid
+func keyPoolFee(pid: String)    = "pool:fee:" + pid
+func keyPoolLpSupply(pid: String) = "pool:lpSupply:" + pid
+func keyPoolSwaps(pid: String)    = "pool:swaps:" + pid
+func keyPoolT0(pid: String)     = "pool:t0:" + pid
+func keyPoolT1(pid: String)     = "pool:t1:" + pid
+func keyEligibilityTracker() = "config:eligibilityTracker"
+func keyTreasury()             = "config:treasury"
+func keyProtocolFeePct()       = "config:protocolFeePct"
+func keyCoreAddr()  = "coreAddr"
+func keyAdmin()     = "admin"
+func keyPaused()    = "paused"
+func getCoreAddr()  = {
+  match getString(this, keyCoreAddr()) {
+    case s: String => s
+    case _ => throw("E_NO_CORE: router not initialized")
+  }
+}
+func paymentAmount(payments: List[AttachedPayment], assetStr: String) = {
+  let assetBytes = getAssetBytes(assetStr)
+  func finder(accum: Int, pmt: AttachedPayment) = {
+    if (pmt.assetId == assetBytes) then pmt.amount else accum
+  }
+  let result = FOLD<10>(payments, -1, finder)
+  if (result == -1) then throw("E_NO_PMT: " + assetStr)
+  else result
+}
+# ── swapExactIn — user-facing swap ──────────────────────────
+@Callable(i)
+func swapExactIn(
+  assetIn: String, assetOut: String, feeBps: Int,
+  amountIn: Int, minAmountOut: Int,
+  deadline: Int
+) = {
+  let coreAddrStr = getCoreAddr()
+  let core = Address(coreAddrStr.fromBase58String())
+  strict chkNp = must(!tryGetBooleanFrom(core, keyPaused()), "E_PAUSED")
+  strict chkDl = must(lastBlock.timestamp <= deadline, "E_DEADLINE")
+  strict chkAmtPos = must(amountIn > 0, "E_ZERO_AMT")
+  strict chkDiff = must(assetIn != assetOut, "E_SAME_ASSET")
+  let (t0, t1) = canonicalOrder(assetIn, assetOut)
+  let pid = makePoolId(t0, t1, feeBps)
+  strict chkEx = must(tryGetIntegerFrom(core, keyPoolExists(pid)) == 1, "E_NO_POOL: " + pid)
+  let pmtAmount = paymentAmount(i.payments, assetIn)
+  strict chkPmt = must(pmtAmount >= amountIn, "E_LOW_PMT")
+  let res0 = tryGetIntegerFrom(core, keyPoolR0(pid))
+  let res1 = tryGetIntegerFrom(core, keyPoolR1(pid))
+  let isInT0 = (assetIn == t0)
+  let resIn  = if (isInT0) then res0 else res1
+  let resOut = if (isInT0) then res1 else res0
+  let fee = tryGetIntegerFrom(core, keyPoolFee(pid))
+  let amountInWithFee = amountIn * (FeeScale - fee)
+  let denominator = resIn * FeeScale + amountInWithFee
+  strict chkDenom = must(denominator > 0, "E_DIV_ZERO")
+  let amountOut = fraction(amountInWithFee, resOut, denominator)
+  strict chkOutPos = must(amountOut > 0, "E_ZERO_OUT")
+  strict chkOutLiq = must(amountOut < resOut, "E_NO_LIQ")
+  strict chkSlip = must(amountOut >= minAmountOut, "E_SLIPPAGE")
+  # Protocol fee — proportional cut of the swap fee
+  let feeAmount = fraction(amountIn, fee, FeeScale)
+  let protocolFeePct = tryGetIntegerFrom(core, keyProtocolFeePct())
+  let treasuryStr = tryGetStringFrom(core, keyTreasury())
+  let protocolFee = if (protocolFeePct > 0 && treasuryStr != "") then fraction(feeAmount, protocolFeePct, FeeScale) else 0
+  let coreInput = amountIn - protocolFee
+  let newResIn  = resIn + coreInput
+  let newResOut = resOut - amountOut
+  # Overflow-safe K invariant check using fraction (128-bit intermediate)
+  strict chkK = if (resIn > 0 && resOut > 0) then must(fraction(newResIn, newResOut, resIn) >= resOut, "E_K_DECREASED") else true
+  let (newR0, newR1) = if (isInT0) then (newResIn, newResOut) else (newResOut, newResIn)
+  let vol0Delta = if (isInT0) then amountIn else amountOut
+  let vol1Delta = if (isInT0) then amountOut else amountIn
+  let fee0Delta = if (isInT0) then feeAmount else 0
+  let fee1Delta = if (isInT0) then 0 else feeAmount
+  # Forward input tokens (minus protocol fee) to Core
+  let inAssetBytes = getAssetBytes(assetIn)
+  let refund = pmtAmount - amountIn
+  strict applyResult = invoke(
+    core,
+    "applySwap",
+    [pid, newR0, newR1, 0, amountOut, assetOut, i.caller.toString(), vol0Delta, vol1Delta, fee0Delta, fee1Delta],
+    [AttachedPayment(inAssetBytes, coreInput)]
+  )
+  # Protocol fee transfer to treasury
+  let protocolFeeActions = if (protocolFee > 0 && treasuryStr != "") then [ScriptTransfer(Address(treasuryStr.fromBase58String()), protocolFee, inAssetBytes)] else nil
+  let trackerStr = tryGetStringFrom(core, keyEligibilityTracker())
+  let refundActions = if (refund > 0) then [ScriptTransfer(i.caller, refund, inAssetBytes)] else nil
+  if (trackerStr != "") then {
+    strict trackSwap = invoke(Address(trackerStr.fromBase58String()), "recordSwap", [i.caller.toString(), this.toString()], [])
+    protocolFeeActions ++ refundActions ++ nil
+  } else protocolFeeActions ++ refundActions
+}
+# ── swapReadOnly — off-chain quote (no state changes) ───────
+@Callable(i)
+func swapReadOnly(assetIn: String, assetOut: String, feeBps: Int, amountIn: Int) = {
+  let core = Address(getCoreAddr().fromBase58String())
+  strict chkDiff = must(assetIn != assetOut, "E_SAME_ASSET")
+  strict chkAmtPos = must(amountIn > 0, "E_ZERO_AMT")
+  let (t0, t1) = canonicalOrder(assetIn, assetOut)
+  let pid = makePoolId(t0, t1, feeBps)
+  strict chkEx = must(tryGetIntegerFrom(core, keyPoolExists(pid)) == 1, "E_NO_POOL: " + pid)
+  let res0 = tryGetIntegerFrom(core, keyPoolR0(pid))
+  let res1 = tryGetIntegerFrom(core, keyPoolR1(pid))
+  let fee = tryGetIntegerFrom(core, keyPoolFee(pid))
+  let isInT0 = (assetIn == t0)
+  let resIn  = if (isInT0) then res0 else res1
+  let resOut = if (isInT0) then res1 else res0
+  let amountInWithFee = amountIn * (FeeScale - fee)
+  let denominator = resIn * FeeScale + amountInWithFee
+  let amountOut = if (denominator > 0) then fraction(amountInWithFee, resOut, denominator) else 0
+  ([], amountOut)
+}
+# ── getPoolInfo — off-chain query ───────────────────────────
+@Callable(i)
+func getPoolInfo(assetA: String, assetB: String, feeBps: Int) = {
+  let core = Address(getCoreAddr().fromBase58String())
+  let (t0, t1) = canonicalOrder(assetA, assetB)
+  let pid = makePoolId(t0, t1, feeBps)
+  if (tryGetIntegerFrom(core, keyPoolExists(pid)) != 1) then ([], "E_NO_POOL")
+  else {
+    let info = pid
+      + "|" + tryGetIntegerFrom(core, keyPoolR0(pid)).toString()
+      + "|" + tryGetIntegerFrom(core, keyPoolR1(pid)).toString()
+      + "|" + tryGetIntegerFrom(core, keyPoolLpSupply(pid)).toString()
+      + "|" + tryGetIntegerFrom(core, keyPoolFee(pid)).toString()
+      + "|" + tryGetIntegerFrom(core, keyPoolSwaps(pid)).toString()
+    ([], info)
+  }
+}
+# ── Admin functions ─────────────────────────────────────────
+@Callable(i)
+func initialize(coreAddr: String, adminAddr: String) = {
+  strict chkSelf = must(i.caller == this, "E_NOT_SELF")
+  [
+    IntegerEntry("v", VERSION),
+    StringEntry(keyCoreAddr(), coreAddr),
+    StringEntry(keyAdmin(), adminAddr)
+  ]
+}
+@Verifier(tx)
+func verify() = sigVerify(tx.bodyBytes, tx.proofs[0], tx.senderPublicKey)

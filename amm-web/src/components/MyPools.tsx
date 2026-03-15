@@ -1,13 +1,17 @@
 /**
- * MyPools — shows pools where the connected user has LP positions.
- * Clicking a pool opens the PoolDetail view.
+ * MyPools — shows pools where the connected user has LP positions,
+ * with PnL tracking and skeleton loaders.
  */
 
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useSdk } from '../context/SdkContext';
 import { useWallet } from '../context/WalletContext';
 import { useTokens, getTokenColor } from '../hooks/useTokens';
-import { PoolDetail } from './PoolDetail';
+import { getTokenLogo } from '../hooks/useTokens';
+import { usePoolStats } from '../hooks/usePoolStats';
+import { SkeletonPoolGrid } from './SkeletonLoaders';
+import { config } from '../config';
 import type { PoolStateV2 } from '@dcc-amm/sdk';
 
 interface UserPosition {
@@ -20,13 +24,14 @@ interface UserPosition {
 
 export function MyPools() {
   const sdk = useSdk();
+  const navigate = useNavigate();
   const { address, isConnected, openConnectModal } = useWallet();
   const { tokens } = useTokens();
 
   const [positions, setPositions] = useState<UserPosition[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedPoolId, setSelectedPoolId] = useState<string | null>(null);
+  const statsMap = usePoolStats(positions.map((p) => p.pool));
 
   useEffect(() => {
     if (!isConnected || !address) {
@@ -99,18 +104,6 @@ export function MyPools() {
     return t?.decimals ?? 8;
   };
 
-  // Pool detail view
-  if (selectedPoolId) {
-    const pos = positions.find((p) => p.pool.poolId === selectedPoolId);
-    return (
-      <PoolDetail
-        poolId={selectedPoolId}
-        userLpBalance={pos?.lpBalance ?? 0n}
-        onBack={() => setSelectedPoolId(null)}
-      />
-    );
-  }
-
   // Not connected
   if (!isConnected) {
     return (
@@ -134,10 +127,7 @@ export function MyPools() {
     return (
       <div className="panel-card my-pools">
         <div className="panel-header"><h2>My Pools</h2></div>
-        <div className="empty-state">
-          <span className="spinner lg" />
-          <p>Loading your positions...</p>
-        </div>
+        <SkeletonPoolGrid />
       </div>
     );
   }
@@ -185,18 +175,48 @@ export function MyPools() {
           <div
             key={pool.poolId}
             className="pool-card position-card"
-            onClick={() => setSelectedPoolId(pool.poolId)}
+            onClick={() => navigate(`/pools/${encodeURIComponent(pool.poolId)}`)}
           >
             <div className="pool-card-header">
               <div className="pool-pair">
-                <span className="pool-dot" style={{ background: getTokenColor(pool.token0 === 'DCC' ? null : pool.token0) }} />
-                <span className="pool-dot" style={{ background: getTokenColor(pool.token1 === 'DCC' ? null : pool.token1), marginLeft: -6 }} />
+                {(() => {
+                  const logo = getTokenLogo(fmtAsset(pool.token0), pool.token0 === 'DCC' ? null : pool.token0);
+                  return logo
+                    ? <img src={logo} alt={fmtAsset(pool.token0)} className="pool-dot-logo" />
+                    : <span className="pool-dot" style={{ background: getTokenColor(pool.token0 === 'DCC' ? null : pool.token0) }} />;
+                })()}
+                {(() => {
+                  const logo = getTokenLogo(fmtAsset(pool.token1), pool.token1 === 'DCC' ? null : pool.token1);
+                  return logo
+                    ? <img src={logo} alt={fmtAsset(pool.token1)} className="pool-dot-logo" style={{ marginLeft: -6 }} />
+                    : <span className="pool-dot" style={{ background: getTokenColor(pool.token1 === 'DCC' ? null : pool.token1), marginLeft: -6 }} />;
+                })()}
                 <span className="pool-pair-name">
                   {fmtAsset(pool.token0)} / {fmtAsset(pool.token1)}
                 </span>
               </div>
               <span className="pool-fee-badge">{Number(pool.feeBps) / 100}%</span>
+              {config.verifiedPools.has(pool.poolId) && (
+                <span className="verified-badge" title="Official verified pool">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M6.5 11.5l-3-3 1.4-1.4L6.5 8.7l4.6-4.6 1.4 1.4z" fill="currentColor"/></svg>
+                  Verified
+                </span>
+              )}
             </div>
+
+            {(() => {
+              const poolStats = statsMap.get(pool.poolId);
+              const apy = poolStats?.apy ?? 0;
+              return (
+                <div className={`pool-apy-badge ${apy > 0 ? 'active' : ''}`}>
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 1l2 4h4l-3 3 1 5-4-2-4 2 1-5-3-3h4z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
+                  </svg>
+                  <span className="pool-apy-value">{apy > 0 ? `${apy.toFixed(2)}%` : '--'}</span>
+                  <span className="pool-apy-label">APY</span>
+                </div>
+              );
+            })()}
 
             <div className="position-share">
               <div className="position-share-bar">
@@ -219,6 +239,17 @@ export function MyPools() {
                 <span className="pool-stat-value">{fmt(lpBalance)}</span>
               </div>
             </div>
+
+            {/* PnL / Earned Fees */}
+            {pool.lpSupply > 0n && (pool.fees0 > 0n || pool.fees1 > 0n) && (
+              <div className="position-pnl">
+                <span className="position-pnl-label">Earned Fees</span>
+                <div className="position-pnl-values">
+                  <span>{fmt((pool.fees0 * lpBalance) / pool.lpSupply, getDecimals(pool.token0))} {fmtAsset(pool.token0)}</span>
+                  <span>{fmt((pool.fees1 * lpBalance) / pool.lpSupply, getDecimals(pool.token1))} {fmtAsset(pool.token1)}</span>
+                </div>
+              </div>
+            )}
 
             <div className="position-cta">
               <span>View Details</span>

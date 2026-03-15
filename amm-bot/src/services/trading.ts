@@ -4,7 +4,7 @@
  */
 
 import { AmmSdk, fromRawAmount, toRawAmount } from '@dcc-amm/sdk';
-import { invokeScript, transfer, broadcast, waitForTx } from '@waves/waves-transactions';
+import { invokeScript, transfer, broadcast, waitForTx } from '@decentralchain/transactions';
 import { config, adminAddress } from '../config';
 import {
   getWalletSeed,
@@ -339,7 +339,7 @@ export async function getPools(): Promise<PoolInfo[]> {
 export async function getPoolForPair(
   assetA: string | null,
   assetB: string | null,
-  feeBps = 30
+  feeBps = 35
 ): Promise<PoolInfo | null> {
   const pools = await getPools();
   const normalA = assetA || 'DCC';

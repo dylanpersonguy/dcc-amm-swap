@@ -1,34 +1,50 @@
 /**
- * PoolDetail — full pool info, user position & earnings, remove-liquidity flow.
+ * PoolDetail — full pool info with breadcrumbs, spot price,
+ * add/remove liquidity, user position, earnings, and toast integration.
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { useSdk } from '../context/SdkContext';
 import { useWallet } from '../context/WalletContext';
 import { useTokens, getTokenColor } from '../hooks/useTokens';
-import { estimateRemoveLiquidity } from '@dcc-amm/sdk';
+import { getTokenLogo } from '../hooks/useTokens';
+import { usePoolStats } from '../hooks/usePoolStats';
+import { useToasts } from '../context/ToastContext';
+import { useTxTracker } from '../context/TransactionTracker';
+import { Breadcrumbs } from './Breadcrumbs';
+import { PriceChart } from './PriceChart';
+import { config } from '../config';
+import { estimateRemoveLiquidity, estimateAddLiquidity, getSpotPrice } from '@dcc-amm/sdk';
 import type { PoolStateV2 } from '@dcc-amm/sdk';
 
-interface PoolDetailProps {
-  poolId: string;
-  userLpBalance: bigint;
-  onBack: () => void;
-}
-
-export function PoolDetail({ poolId, userLpBalance: initialLpBalance, onBack }: PoolDetailProps) {
+export function PoolDetail() {
+  const { poolId: routePoolId } = useParams<{ poolId: string }>();
+  const navigate = useNavigate();
+  const poolId = decodeURIComponent(routePoolId || '');
   const sdk = useSdk();
-  const { address, isConnected, signAndBroadcast } = useWallet();
+  const { address, isConnected, signAndBroadcast, openConnectModal } = useWallet();
   const { tokens } = useTokens();
+  const { addToast } = useToasts();
+  const { trackTransaction, confirmTransaction, failTransaction } = useTxTracker();
 
   const [pool, setPool] = useState<PoolStateV2 | null>(null);
-  const [lpBalance, setLpBalance] = useState(initialLpBalance);
+  const [lpBalance, setLpBalance] = useState(0n);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const statsMap = usePoolStats(pool ? [pool] : []);
+  const stats = pool ? statsMap.get(pool.poolId) : undefined;
 
   // Remove liquidity state
   const [removePercent, setRemovePercent] = useState(0);
   const [removing, setRemoving] = useState(false);
   const [txResult, setTxResult] = useState<{ success: boolean; message: string } | null>(null);
+
+  // Add liquidity state
+  const [addAmount0, setAddAmount0] = useState('');
+  const [addAmount1, setAddAmount1] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [addResult, setAddResult] = useState<{ success: boolean; message: string } | null>(null);
 
   const fetchPool = useCallback(async () => {
     try {
@@ -78,6 +94,9 @@ export function PoolDetail({ poolId, userLpBalance: initialLpBalance, onBack }: 
     return t?.decimals ?? 8;
   };
 
+  // Spot price
+  const spotPrice = pool ? getSpotPrice(pool) : { price0to1: 0, price1to0: 0 };
+
   const sharePercent = pool && pool.lpSupply > 0n
     ? Number(lpBalance * 10000n / pool.lpSupply) / 100
     : 0;
@@ -96,8 +115,60 @@ export function PoolDetail({ poolId, userLpBalance: initialLpBalance, onBack }: 
     ? (pool.fees1 * lpBalance) / pool.lpSupply
     : 0n;
 
+  // Parse amount string to raw bigint
+  const parseAmount = (str: string, decimals: number): bigint => {
+    if (!str || str === '.' || str === '0.') return 0n;
+    const parts = str.split('.');
+    const intPart = parts[0] || '0';
+    const fracPart = (parts[1] || '').slice(0, decimals).padEnd(decimals, '0');
+    return BigInt(intPart) * BigInt(10 ** decimals) + BigInt(fracPart);
+  };
+
+  // Add liquidity estimate
+  const rawAdd0 = pool ? parseAmount(addAmount0, getDecimals(pool.token0)) : 0n;
+  const rawAdd1 = pool ? parseAmount(addAmount1, getDecimals(pool.token1)) : 0n;
+  const addEstimate = pool && rawAdd0 > 0n && rawAdd1 > 0n && pool.lpSupply > 0n
+    ? (() => { try { return estimateAddLiquidity(rawAdd0, rawAdd1, pool); } catch { return null; } })()
+    : null;
+
+  async function handleAddLiquidity() {
+    if (!pool || !address || rawAdd0 <= 0n || rawAdd1 <= 0n) return;
+    const trackId = trackTransaction('add-liquidity', `Add liquidity to ${fmtAsset(pool.token0)}/${fmtAsset(pool.token1)}`);
+
+    try {
+      setAdding(true);
+      setAddResult(null);
+
+      const { tx } = await sdk.buildAddLiquidity(
+        pool.token0 === 'DCC' ? null : pool.token0,
+        pool.token1 === 'DCC' ? null : pool.token1,
+        rawAdd0,
+        rawAdd1,
+        Number(pool.feeBps),
+        100n, // 1% slippage
+      );
+
+      const id = await signAndBroadcast(tx);
+      setAddResult({ success: true, message: 'Liquidity added successfully!' });
+      setAddAmount0('');
+      setAddAmount1('');
+      confirmTransaction(trackId, id);
+      addToast('success', 'Liquidity added!', { txId: id });
+
+      setTimeout(fetchPool, 3000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Transaction failed';
+      setAddResult({ success: false, message: msg });
+      failTransaction(trackId);
+      addToast('error', msg);
+    } finally {
+      setAdding(false);
+    }
+  }
+
   async function handleRemoveLiquidity() {
     if (!pool || !address || lpToRemove <= 0n) return;
+    const trackId = trackTransaction('remove-liquidity', `Remove ${removePercent}% liquidity from ${fmtAsset(pool.token0)}/${fmtAsset(pool.token1)}`);
 
     try {
       setRemoving(true);
@@ -111,17 +182,18 @@ export function PoolDetail({ poolId, userLpBalance: initialLpBalance, onBack }: 
         100n, // 1% slippage
       );
 
-      await signAndBroadcast(tx);
+      const id = await signAndBroadcast(tx);
       setTxResult({ success: true, message: `Removed ${removePercent}% liquidity successfully!` });
       setRemovePercent(0);
+      confirmTransaction(trackId, id);
+      addToast('success', `Removed ${removePercent}% liquidity!`, { txId: id });
 
-      // Refresh data
       setTimeout(fetchPool, 3000);
     } catch (err) {
-      setTxResult({
-        success: false,
-        message: err instanceof Error ? err.message : 'Transaction failed',
-      });
+      const msg = err instanceof Error ? err.message : 'Transaction failed';
+      setTxResult({ success: false, message: msg });
+      failTransaction(trackId);
+      addToast('error', msg);
     } finally {
       setRemoving(false);
     }
@@ -142,7 +214,7 @@ export function PoolDetail({ poolId, userLpBalance: initialLpBalance, onBack }: 
     return (
       <div className="panel-card pool-detail">
         <div className="detail-header">
-          <button className="detail-back-btn" onClick={onBack}>
+          <button className="detail-back-btn" onClick={() => navigate('/pools')}>
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
               <path d="M10 4L6 8l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
@@ -158,25 +230,81 @@ export function PoolDetail({ poolId, userLpBalance: initialLpBalance, onBack }: 
 
   return (
     <div className="panel-card pool-detail">
+      {/* Breadcrumbs */}
+      <Breadcrumbs items={[
+        { label: 'Pools', path: '/pools' },
+        { label: `${fmtAsset(pool.token0)} / ${fmtAsset(pool.token1)}` },
+      ]} />
+
       {/* Header */}
       <div className="detail-header">
-        <button className="detail-back-btn" onClick={onBack}>
+        <button className="detail-back-btn" onClick={() => navigate('/pools')}>
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
             <path d="M10 4L6 8l4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
           Back
         </button>
         <div className="detail-title">
-          <span className="pool-dot" style={{ background: getTokenColor(pool.token0 === 'DCC' ? null : pool.token0) }} />
-          <span className="pool-dot" style={{ background: getTokenColor(pool.token1 === 'DCC' ? null : pool.token1), marginLeft: -6 }} />
+          {(() => {
+            const logo = getTokenLogo(fmtAsset(pool.token0), pool.token0 === 'DCC' ? null : pool.token0);
+            return logo
+              ? <img src={logo} alt={fmtAsset(pool.token0)} className="pool-dot-logo" />
+              : <span className="pool-dot" style={{ background: getTokenColor(pool.token0 === 'DCC' ? null : pool.token0) }} />;
+          })()}
+          {(() => {
+            const logo = getTokenLogo(fmtAsset(pool.token1), pool.token1 === 'DCC' ? null : pool.token1);
+            return logo
+              ? <img src={logo} alt={fmtAsset(pool.token1)} className="pool-dot-logo" style={{ marginLeft: -6 }} />
+              : <span className="pool-dot" style={{ background: getTokenColor(pool.token1 === 'DCC' ? null : pool.token1), marginLeft: -6 }} />;
+          })()}
           <h2>{fmtAsset(pool.token0)} / {fmtAsset(pool.token1)}</h2>
           <span className="pool-fee-badge">{Number(pool.feeBps) / 100}%</span>
+          {config.verifiedPools.has(pool.poolId) && (
+            <span className="verified-badge" title="Official verified pool">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M6.5 11.5l-3-3 1.4-1.4L6.5 8.7l4.6-4.6 1.4 1.4z" fill="currentColor"/></svg>
+              Verified
+            </span>
+          )}
         </div>
       </div>
+
+      {/* APY Banner */}
+      <div className={`pool-apy-banner ${(stats?.apy ?? 0) > 0 ? 'active' : ''}`}>
+        <div className="pool-apy-banner-main">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+            <path d="M8 1l2 4h4l-3 3 1 5-4-2-4 2 1-5-3-3h4z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/>
+          </svg>
+          <span className="pool-apy-banner-value">{(stats?.apy ?? 0) > 0 ? `${stats!.apy.toFixed(2)}%` : '--'}</span>
+          <span className="pool-apy-banner-label">APY</span>
+        </div>
+        <span className="pool-apy-banner-note">Based on 24h trading fees annualized</span>
+      </div>
+
+      {/* Price Chart */}
+      <PriceChart
+        poolId={poolId}
+        token0Name={fmtAsset(pool.token0)}
+        token1Name={fmtAsset(pool.token1)}
+      />
 
       {/* Pool Overview */}
       <section className="detail-section">
         <h3 className="detail-section-title">Pool Overview</h3>
+
+        {/* Spot Price */}
+        {(spotPrice.price0to1 > 0) && (
+          <div className="spot-price-row">
+            <div className="spot-price-item">
+              <span className="spot-price-label">1 {fmtAsset(pool.token0)} =</span>
+              <span className="spot-price-value">{spotPrice.price0to1 < 0.0001 ? spotPrice.price0to1.toExponential(3) : spotPrice.price0to1.toFixed(6)} {fmtAsset(pool.token1)}</span>
+            </div>
+            <div className="spot-price-item">
+              <span className="spot-price-label">1 {fmtAsset(pool.token1)} =</span>
+              <span className="spot-price-value">{spotPrice.price1to0 < 0.0001 ? spotPrice.price1to0.toExponential(3) : spotPrice.price1to0.toFixed(6)} {fmtAsset(pool.token0)}</span>
+            </div>
+          </div>
+        )}
+
         <div className="detail-grid">
           <div className="detail-stat">
             <span className="detail-stat-label">Reserve {fmtAsset(pool.token0)}</span>
@@ -211,6 +339,90 @@ export function PoolDetail({ poolId, userLpBalance: initialLpBalance, onBack }: 
             <span className="detail-stat-value">{fmt(pool.fees1, getDecimals(pool.token1))}</span>
           </div>
         </div>
+      </section>
+
+      {/* Add Liquidity */}
+      <section className="detail-section add-liq-section">
+        <h3 className="detail-section-title">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
+            <path d="M8 5v6M5 8h6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+          </svg>
+          Add Liquidity
+        </h3>
+
+        {!isConnected ? (
+          <div className="add-liq-connect-cta">
+            <p>Connect your wallet to add liquidity and earn fees from every swap.</p>
+            <button className="btn-accent" onClick={() => openConnectModal()}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <rect x="2" y="7" width="12" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.5"/>
+                <path d="M5 7V5a3 3 0 016 0v2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+              Connect Wallet
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="add-liq-inputs">
+              <div className="add-liq-input-group">
+                <label className="add-liq-label">{fmtAsset(pool.token0)}</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="0.0"
+                  className="add-liq-input"
+                  value={addAmount0}
+                  onChange={(e) => {
+                    const v = e.target.value.replace(/[^0-9.]/g, '');
+                    if ((v.match(/\./g) || []).length <= 1) setAddAmount0(v);
+                  }}
+                />
+              </div>
+              <div className="add-liq-input-group">
+                <label className="add-liq-label">{fmtAsset(pool.token1)}</label>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder="0.0"
+                  className="add-liq-input"
+                  value={addAmount1}
+                  onChange={(e) => {
+                    const v = e.target.value.replace(/[^0-9.]/g, '');
+                    if ((v.match(/\./g) || []).length <= 1) setAddAmount1(v);
+                  }}
+                />
+              </div>
+            </div>
+
+            {addEstimate && (
+              <div className="add-liq-preview">
+                <span className="add-liq-preview-label">Estimated LP tokens</span>
+                <span className="add-liq-preview-value">{fmt(addEstimate.lpMinted)}</span>
+              </div>
+            )}
+
+            <button
+              className="action-btn btn-accent add-liq-btn"
+              disabled={rawAdd0 <= 0n || rawAdd1 <= 0n || adding}
+              onClick={handleAddLiquidity}
+            >
+              {adding ? (
+                <><span className="spinner" /> Adding...</>
+              ) : rawAdd0 <= 0n || rawAdd1 <= 0n ? (
+                'Enter amounts'
+              ) : (
+                'Add Liquidity'
+              )}
+            </button>
+
+            {addResult && (
+              <div className={`tx-toast ${addResult.success ? 'success' : 'error'}`}>
+                {addResult.message}
+              </div>
+            )}
+          </>
+        )}
       </section>
 
       {/* User Position */}

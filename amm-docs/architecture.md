@@ -132,7 +132,7 @@ liquidity add/remove). k NEVER decreases.
 ## 7. Fee Model (v2)
 
 - Trade fee: configurable per pool at creation time (1–1000 bps = 0.01%–10%).
-- Default: 30 bps (0.3%).
+- Default: 35 bps (0.35%).
 - Fee is deducted from the INPUT amount before computing the swap output.
 - 100% of fees accrue to LP holders via reserve growth.
 - No protocol fee in v2.

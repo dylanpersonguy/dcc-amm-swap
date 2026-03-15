@@ -1,174 +1,294 @@
-#!/usr/bin/env node
+"use strict";
 /**
- * DCC AMM — Mainnet Deploy Script
+ * DCC AMM — Deploy Script
  *
- * Compiles Pool.ride via the DCC node, signs SetScript + initialize()
- * transactions, and broadcasts them.
+ * Compiles Pool.ride via the node's /utils/script/compileCode endpoint,
+ * creates a SetScript transaction, broadcasts it, then calls initialize().
  *
  * Usage:
- *   node scripts/deploy.js
+ *   npx ts-node scripts/deploy.ts \
+ *     --network testnet \
+ *     --seed "your twelve word seed phrase"
  *
- * Environment:
- *   SEED     - deployer seed phrase (required)
- *   ADMIN    - admin address override (default: deployer)
- *   DRY_RUN  - set to "1" to compile/sign without broadcasting
+ * Optional:
+ *   --admin <address>   Override admin (default: deployer address)
+ *   --node  <url>       Override node URL
+ *   --dry-run           Compile and sign but don't broadcast
  */
-
-const fs = require('fs');
-const path = require('path');
-const https = require('https');
-const {
-  setScript,
-  invokeScript,
-  broadcast,
-  waitForTx,
-  libs,
-} = require('@waves/waves-transactions');
-
-// ── DCC Mainnet Config ──────────────────────────────────────────────
-const NODE_URL = 'https://mainnet-node.decentralchain.io';
-const CHAIN_ID = '?';  // DCC mainnet = byte 63
-
-// ── HTTP helper (for compile endpoint) ──────────────────────────────
-function postText(url, body) {
-  return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    const req = https.request(
-      {
-        hostname: parsed.hostname,
-        port: parsed.port || 443,
-        path: parsed.pathname + parsed.search,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain',
-          'Content-Length': Buffer.byteLength(body),
-        },
-      },
-      (res) => {
-        let data = '';
-        res.on('data', (chunk) => (data += chunk));
-        res.on('end', () => resolve({ status: res.statusCode, body: data }));
-      }
-    );
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
-}
-
-// ── Compile RIDE ────────────────────────────────────────────────────
-async function compileRide(source) {
-  console.log('  Compiling RIDE via node API...');
-  const res = await postText(`${NODE_URL}/utils/script/compileCode`, source);
-  const json = JSON.parse(res.body);
-  if (json.error || !json.script) {
-    throw new Error(`Compile failed: ${json.message || res.body}`);
-  }
-  console.log(`  Compiled OK (${json.script.length} chars)`);
-  return json.script; // includes "base64:" prefix
-}
-
-// ── Main ────────────────────────────────────────────────────────────
-async function main() {
-  const seed = process.env.SEED;
-  if (!seed) {
-    console.error('ERROR: Set SEED environment variable');
-    console.error('  SEED="your seed phrase" node scripts/deploy.js');
-    process.exit(1);
-  }
-
-  const dryRun = process.env.DRY_RUN === '1';
-  const deployerAddr = libs.crypto.address(seed, CHAIN_ID);
-  const adminAddr = process.env.ADMIN || deployerAddr;
-
-  console.log('');
-  console.log('  DCC AMM — Deploy Pool.ride v2.0');
-  console.log('  ================================');
-  console.log(`  Node:     ${NODE_URL}`);
-  console.log(`  Chain:    ${CHAIN_ID} (byte ${CHAIN_ID.charCodeAt(0)})`);
-  console.log(`  Deployer: ${deployerAddr}`);
-  console.log(`  Admin:    ${adminAddr}`);
-  console.log(`  Dry Run:  ${dryRun}`);
-  console.log('');
-
-  // Step 1: Read & compile RIDE
-  const ridePath = path.join(__dirname, '..', 'ride', 'Pool.ride');
-  const source = fs.readFileSync(ridePath, 'utf8');
-  console.log(`[1/4] Loaded Pool.ride (${source.length} chars)`);
-  const compiledScript = await compileRide(source);
-  console.log('[2/4] RIDE compiled');
-
-  // Step 2: Build & sign SetScript tx
-  console.log('[3/4] Building SetScript transaction...');
-  const deployTx = setScript(
-    {
-      script: compiledScript,
-      chainId: CHAIN_ID.charCodeAt(0),
-      fee: 1400000, // 0.014 DCC
-    },
-    seed
-  );
-  console.log(`  Tx ID:  ${deployTx.id}`);
-  console.log(`  Fee:    ${deployTx.fee / 100000000} DCC`);
-
-  if (dryRun) {
-    console.log('');
-    console.log('[DRY RUN] Signed SetScript tx:');
-    console.log(`  ${JSON.stringify(deployTx).substring(0, 200)}...`);
-    console.log('[DRY RUN] Would then call initialize()');
-    return;
-  }
-
-  // Step 3: Broadcast SetScript
-  console.log('  Broadcasting SetScript...');
-  try {
-    await broadcast(deployTx, NODE_URL);
-  } catch (err) {
-    console.error(`  Broadcast error: ${err.message}`);
-    // Extract useful info from error
-    if (err.message.includes('negative')) {
-      console.error('  -> Account has insufficient native DCC for gas fees');
-      console.error(`  -> Send at least 0.02 DCC to ${deployerAddr}`);
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
     }
-    throw err;
-  }
-  console.log('  Waiting for confirmation...');
-  await waitForTx(deployTx.id, { apiBase: NODE_URL, timeout: 120000 });
-  console.log('  SetScript confirmed!');
-
-  // Step 4: Call initialize(admin)
-  console.log(`[4/4] Calling initialize("${adminAddr}")...`);
-  const initTx = invokeScript(
-    {
-      dApp: deployerAddr,
-      call: {
-        function: 'initialize',
-        args: [{ type: 'string', value: adminAddr }],
-      },
-      payment: [],
-      chainId: CHAIN_ID.charCodeAt(0),
-      fee: 900000, // 0.009 DCC (includes 0.004 smart account surcharge)
-    },
-    seed
-  );
-  console.log(`  Tx ID: ${initTx.id}`);
-
-  await broadcast(initTx, NODE_URL);
-  console.log('  Waiting for confirmation...');
-  await waitForTx(initTx.id, { apiBase: NODE_URL, timeout: 120000 });
-  console.log('  initialize() confirmed!');
-
-  console.log('');
-  console.log('  Deployment Complete!');
-  console.log('  ====================');
-  console.log(`  dApp Address: ${deployerAddr}`);
-  console.log(`  Admin:        ${adminAddr}`);
-  console.log(`  SetScript Tx: ${deployTx.id}`);
-  console.log(`  Init Tx:      ${initTx.id}`);
-}
-
-main().catch((err) => {
-  console.error('');
-  console.error('DEPLOY FAILED:', err.message);
-  process.exit(1);
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
 });
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const http = __importStar(require("http"));
+const https = __importStar(require("https"));
+const NETWORK_CONFIGS = {
+    testnet: {
+        nodeUrl: 'https://testnet.decentralchain.io',
+        chainId: 'T',
+    },
+    mainnet: {
+        nodeUrl: 'https://nodes.decentralchain.io',
+        chainId: 'D',
+    },
+};
+// ── CLI Arg Parser ────────────────────────────────────────────────────
+function parseArgs() {
+    const args = process.argv.slice(2);
+    let network = 'testnet';
+    let seed = '';
+    let nodeUrl = '';
+    let adminAddr;
+    let dryRun = false;
+    for (let i = 0; i < args.length; i++) {
+        switch (args[i]) {
+            case '--network':
+                network = args[++i];
+                break;
+            case '--seed':
+                seed = args[++i];
+                break;
+            case '--node':
+                nodeUrl = args[++i];
+                break;
+            case '--admin':
+                adminAddr = args[++i];
+                break;
+            case '--dry-run':
+                dryRun = true;
+                break;
+        }
+    }
+    if (!seed) {
+        console.error('Usage: deploy.ts --network <testnet|mainnet> --seed "<seed phrase>" [--admin <addr>] [--node <url>] [--dry-run]');
+        process.exit(1);
+    }
+    const netCfg = NETWORK_CONFIGS[network];
+    return {
+        network,
+        seed,
+        nodeUrl: nodeUrl || netCfg.nodeUrl,
+        chainId: netCfg.chainId,
+        adminAddr,
+        dryRun,
+    };
+}
+// ── HTTP Helper ───────────────────────────────────────────────────────
+function httpRequest(url, method, body, contentType) {
+    return new Promise((resolve, reject) => {
+        const parsedUrl = new URL(url);
+        const requester = parsedUrl.protocol === 'https:' ? https : http;
+        const options = {
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port,
+            path: parsedUrl.pathname + parsedUrl.search,
+            method,
+            headers: {
+                ...(contentType ? { 'Content-Type': contentType } : {}),
+                ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
+            },
+        };
+        const req = requester.request(options, (res) => {
+            let data = '';
+            res.on('data', (chunk) => (data += chunk));
+            res.on('end', () => resolve({ status: res.statusCode || 0, body: data }));
+        });
+        req.on('error', reject);
+        if (body)
+            req.write(body);
+        req.end();
+    });
+}
+// ── Compile RIDE via Node API ─────────────────────────────────────────
+async function compileRide(nodeUrl, source) {
+    console.log('  Compiling RIDE script via node API...');
+    const res = await httpRequest(`${nodeUrl}/utils/script/compileCode`, 'POST', source, 'text/plain');
+    if (res.status !== 200) {
+        throw new Error(`Compilation failed (HTTP ${res.status}): ${res.body}`);
+    }
+    const json = JSON.parse(res.body);
+    if (json.error) {
+        throw new Error(`Compilation error: ${json.message || JSON.stringify(json)}`);
+    }
+    const base64Script = json.script;
+    if (!base64Script) {
+        throw new Error('No compiled script in response: ' + res.body);
+    }
+    // Remove "base64:" prefix if present
+    const script = base64Script.startsWith('base64:')
+        ? base64Script.slice(7)
+        : base64Script;
+    console.log(`  Compiled successfully (${script.length} chars base64)`);
+    return base64Script; // Keep prefix for SetScript tx
+}
+// ── Broadcast Transaction ─────────────────────────────────────────────
+async function broadcast(nodeUrl, txJson) {
+    const res = await httpRequest(`${nodeUrl}/transactions/broadcast`, 'POST', txJson, 'application/json');
+    const json = JSON.parse(res.body);
+    if (res.status !== 200 || json.error) {
+        throw new Error(`Broadcast failed (HTTP ${res.status}): ${json.message || res.body}`);
+    }
+    return json;
+}
+// ── Wait for Transaction Confirmation ─────────────────────────────────
+async function waitForTx(nodeUrl, txId, timeoutMs = 60000, intervalMs = 3000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+        try {
+            const res = await httpRequest(`${nodeUrl}/transactions/info/${txId}`, 'GET');
+            if (res.status === 200) {
+                return JSON.parse(res.body);
+            }
+        }
+        catch {
+            // ignore, retry
+        }
+        await new Promise((r) => setTimeout(r, intervalMs));
+    }
+    throw new Error(`Timeout waiting for tx ${txId}`);
+}
+// ── Get Address from Seed ─────────────────────────────────────────────
+// NOTE: This is a placeholder. In production, use @decentralchain/ts-lib-crypto
+// or @waves/ts-lib-crypto for proper address derivation.
+function getAddressPlaceholder(seed, chainId) {
+    console.log(`  [NOTE] Address derivation requires @decentralchain/ts-lib-crypto`);
+    console.log(`  Seed: "${seed.substring(0, 8)}..."  Chain: ${chainId}`);
+    return '<DEPLOYER_ADDRESS>';
+}
+// ── Main ──────────────────────────────────────────────────────────────
+async function main() {
+    const config = parseArgs();
+    console.log('╔══════════════════════════════════════════════════════╗');
+    console.log('║       DCC AMM — Deploy Pool.ride v2.0               ║');
+    console.log('╚══════════════════════════════════════════════════════╝');
+    console.log('');
+    console.log(`  Network:  ${config.network}`);
+    console.log(`  Node:     ${config.nodeUrl}`);
+    console.log(`  Dry Run:  ${config.dryRun}`);
+    console.log('');
+    // Step 1: Read RIDE source
+    const ridePath = path.join(__dirname, '..', 'ride', 'Pool.ride');
+    if (!fs.existsSync(ridePath)) {
+        console.error(`ERROR: Pool.ride not found at ${ridePath}`);
+        process.exit(1);
+    }
+    const rideSource = fs.readFileSync(ridePath, 'utf8');
+    console.log(`[1/4] Loaded Pool.ride (${rideSource.length} chars)`);
+    // Step 2: Compile via node
+    const compiledScript = await compileRide(config.nodeUrl, rideSource);
+    console.log(`[2/4] RIDE compiled successfully`);
+    // Step 3: Build SetScript transaction
+    const deployerAddr = getAddressPlaceholder(config.seed, config.chainId);
+    const adminAddr = config.adminAddr || deployerAddr;
+    console.log(`[3/4] Building SetScript transaction...`);
+    console.log(`  Deployer: ${deployerAddr}`);
+    console.log(`  Admin:    ${adminAddr}`);
+    // SetScript transaction structure
+    const setScriptTx = {
+        type: 13,
+        version: 2,
+        chainId: config.chainId.charCodeAt(0),
+        script: compiledScript,
+        fee: 1400000, // 0.014 DCC (extra fee for smart account)
+        timestamp: Date.now(),
+    };
+    console.log(`  Fee: ${setScriptTx.fee / 100000000} DCC`);
+    if (config.dryRun) {
+        console.log('');
+        console.log('[DRY RUN] Would broadcast SetScript transaction:');
+        console.log(JSON.stringify(setScriptTx, null, 2));
+        console.log('');
+        console.log('[DRY RUN] Then invoke initialize():');
+        console.log(`  dApp: ${deployerAddr}`);
+        console.log(`  function: initialize("${adminAddr}")`);
+        console.log('');
+        console.log('Deploy process would complete. Exiting (dry run).');
+        return;
+    }
+    // ── Production deployment flow ──
+    // Uncomment when @decentralchain/transactions is installed:
+    //
+    // import { setScript, invokeScript, broadcast as txBroadcast } from '@decentralchain/transactions';
+    //
+    // // Deploy script
+    // const deployTx = setScript({
+    //   script: compiledScript,
+    //   chainId: config.chainId.charCodeAt(0),
+    //   fee: 1400000,
+    // }, config.seed);
+    //
+    // console.log(`  Tx ID: ${deployTx.id}`);
+    // const deployResult = await txBroadcast(deployTx, config.nodeUrl);
+    // console.log(`  Broadcast OK. Waiting for confirmation...`);
+    // await waitForTx(config.nodeUrl, deployTx.id);
+    // console.log(`  Confirmed in block.`);
+    //
+    // // Initialize
+    // console.log(`[4/4] Calling initialize("${adminAddr}")...`);
+    // const initTx = invokeScript({
+    //   dApp: deployerAddr,
+    //   call: {
+    //     function: 'initialize',
+    //     args: [{ type: 'string', value: adminAddr }],
+    //   },
+    //   payment: [],
+    //   chainId: config.chainId.charCodeAt(0),
+    //   fee: 500000,
+    // }, config.seed);
+    //
+    // await txBroadcast(initTx, config.nodeUrl);
+    // await waitForTx(config.nodeUrl, initTx.id);
+    // console.log(`  Initialized! Tx: ${initTx.id}`);
+    //
+    // console.log('');
+    // console.log('═══ Deployment Complete ═══');
+    // console.log(`  dApp Address: ${deployerAddr}`);
+    // console.log(`  Admin:        ${adminAddr}`);
+    // console.log(`  Network:      ${config.network}`);
+    console.log('');
+    console.log('[4/4] Production broadcast requires @decentralchain/transactions.');
+    console.log('      Install it and uncomment the broadcast section in deploy.ts.');
+    console.log('');
+    console.log('Manual deployment steps:');
+    console.log(`  1. Use compiled script above with a SetScript transaction`);
+    console.log(`  2. Sign with seed and broadcast to ${config.nodeUrl}`);
+    console.log(`  3. Call initialize("${adminAddr}") on the deployed dApp`);
+    console.log(`  4. Run smoke-test.ts to verify`);
+}
+main().catch((err) => {
+    console.error('');
+    console.error('DEPLOY FAILED:', err.message);
+    process.exit(1);
+});
+//# sourceMappingURL=deploy.js.map

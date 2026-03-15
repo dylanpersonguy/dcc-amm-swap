@@ -136,9 +136,9 @@ export function getPoolId(
  *
  * v2 format: "pool:<field>:<poolId>"
  *
- * @param poolId - The v2 pool ID (e.g., "p:DCC:3PAbcd:30")
+ * @param poolId - The v2 pool ID (e.g., "p:DCC:3PAbcd:35")
  * @param field - Field name (e.g., "r0", "r1", "lpSupply", "exists")
- * @returns State key string (e.g., "pool:r0:p:DCC:3PAbcd:30")
+ * @returns State key string (e.g., "pool:r0:p:DCC:3PAbcd:35")
  */
 export function poolStateKeyV2(poolId: string, field: string): string {
   return `pool:${field}:${poolId}`;
@@ -160,7 +160,7 @@ export function lpBalanceKey(poolId: string, address: string): string {
 /**
  * Parse a v2 pool ID into its components.
  *
- * @param poolId - Pool ID string like "p:DCC:3PAbcd:30"
+ * @param poolId - Pool ID string like "p:DCC:3PAbcd:35"
  * @returns { token0, token1, feeBps } or throws if invalid
  */
 export function parsePoolId(poolId: string): {
