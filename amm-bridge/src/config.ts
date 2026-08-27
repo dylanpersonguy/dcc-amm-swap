@@ -17,7 +17,12 @@ export const config = {
   dccAdminSeed: process.env.DCC_ADMIN_SEED || '',
 
   // Pricing
+  // Static fallback used until a live DCC/<reference asset> pool exists on the AMM.
   dccPriceUsd: parseFloat(process.env.DCC_PRICE_USD || '0.05'),
+  // When set, price is read from this pool's live reserves on the indexer instead
+  // of the static fallback above (e.g. a DecentralChain-native USDT/USDC asset id).
+  priceReferenceAssetId: process.env.PRICE_REFERENCE_ASSET_ID || '',
+  indexerUrl: process.env.INDEXER_URL || 'https://amm-indexer-production.up.railway.app',
 
   // Fees
   bridgeFeePct: parseFloat(process.env.BRIDGE_FEE_PCT || '1.0'),

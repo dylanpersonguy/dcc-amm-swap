@@ -8,6 +8,7 @@ import { config } from './config';
 import * as db from './db';
 import * as solana from './solana';
 import { processDeposit } from './dcc';
+import { getDccPriceUsd } from './pricing';
 
 const router = Router();
 
@@ -38,8 +39,9 @@ router.get('/health', async (_req: Request, res: Response) => {
 router.get('/deposit/limits', async (_req: Request, res: Response) => {
   try {
     const solPrice = await solana.getCoinPriceUsd('SOL');
-    const minUsd = 10 * config.dccPriceUsd;   // 10 DCC minimum = $0.50
-    const maxUsd = 1_000_000 * config.dccPriceUsd; // 1M DCC max = $50,000
+    const dccPrice = await getDccPriceUsd();
+    const minUsd = 10 * dccPrice;   // 10 DCC minimum
+    const maxUsd = 1_000_000 * dccPrice; // 1M DCC max
 
     res.json({
       minUsd,
@@ -77,10 +79,10 @@ router.get('/deposit/limits', async (_req: Request, res: Response) => {
 
 router.post('/deposit', async (req: Request, res: Response) => {
   try {
-    const { coin, amountUsd, dccAmount, dccRecipient, userId } = req.body;
+    const { coin, amountUsd, dccRecipient, userId } = req.body;
 
-    if (!coin || !amountUsd || !dccAmount || !dccRecipient || !userId) {
-      return res.status(400).json({ error: 'Missing required fields: coin, amountUsd, dccAmount, dccRecipient, userId' });
+    if (!coin || !amountUsd || !dccRecipient || !userId) {
+      return res.status(400).json({ error: 'Missing required fields: coin, amountUsd, dccRecipient, userId' });
     }
 
     const orderId = uuid();
@@ -93,6 +95,13 @@ router.post('/deposit', async (req: Request, res: Response) => {
     // Calculate fees
     const bridgeFeeUsd = amountUsd * (config.bridgeFeePct / 100);
     const bridgeFeeAmount = await solana.coinAmountForUsd(coin, bridgeFeeUsd);
+
+    // dccAmount is ALWAYS computed here from amountUsd and the current server
+    // price — never trust a client-supplied payout amount, or anyone could
+    // request an arbitrary DCC payout against a tiny real deposit.
+    const dccPrice = await getDccPriceUsd();
+    const netUsd = amountUsd - bridgeFeeUsd;
+    const dccAmount = Math.floor(netUsd / dccPrice);
 
     const expiresAt = Math.floor(Date.now() / 1000) + Math.floor(config.depositExpiryMs / 1000);
 
@@ -130,10 +139,10 @@ router.post('/deposit', async (req: Request, res: Response) => {
 
 router.post('/deposit/spl', async (req: Request, res: Response) => {
   try {
-    const { coin, amountUsd, dccAmount, dccRecipient, userId } = req.body;
+    const { coin, amountUsd, dccRecipient, userId } = req.body;
 
-    if (!coin || !amountUsd || !dccAmount || !dccRecipient || !userId) {
-      return res.status(400).json({ error: 'Missing required fields: coin, amountUsd, dccAmount, dccRecipient, userId' });
+    if (!coin || !amountUsd || !dccRecipient || !userId) {
+      return res.status(400).json({ error: 'Missing required fields: coin, amountUsd, dccRecipient, userId' });
     }
 
     if (!['USDT', 'USDC'].includes(coin)) {
@@ -147,6 +156,11 @@ router.post('/deposit/spl', async (req: Request, res: Response) => {
     const depositAmount = await solana.coinAmountForUsd(coin, amountUsd);
     const bridgeFeeUsd = amountUsd * (config.bridgeFeePct / 100);
     const bridgeFeeAmount = await solana.coinAmountForUsd(coin, bridgeFeeUsd);
+
+    // See /deposit above — dccAmount is always server-computed, never trusted from the client.
+    const dccPrice = await getDccPriceUsd();
+    const netUsd = amountUsd - bridgeFeeUsd;
+    const dccAmount = Math.floor(netUsd / dccPrice);
 
     const expiresAt = Math.floor(Date.now() / 1000) + Math.floor(config.depositExpiryMs / 1000);
 
@@ -205,10 +219,11 @@ router.get('/history/:address', (req: Request, res: Response) => {
 
 // ── Fees ───────────────────────────────────────────────────────────
 
-router.get('/fees', (_req: Request, res: Response) => {
+router.get('/fees', async (_req: Request, res: Response) => {
+  const dccPriceUsd = await getDccPriceUsd();
   res.json({
     bridgeFeePct: config.bridgeFeePct,
-    dccPriceUsd: config.dccPriceUsd,
+    dccPriceUsd,
     description: `${config.bridgeFeePct}% bridge fee on deposits`,
   });
 });
@@ -223,9 +238,10 @@ router.get('/fees/quote', async (req: Request, res: Response) => {
     }
 
     const coinPrice = await solana.getCoinPriceUsd(coin);
+    const dccPriceUsd = await getDccPriceUsd();
     const bridgeFeeUsd = amountUsd * (config.bridgeFeePct / 100);
     const netUsd = amountUsd - bridgeFeeUsd;
-    const dccReceived = Math.floor(netUsd / config.dccPriceUsd);
+    const dccReceived = Math.floor(netUsd / dccPriceUsd);
 
     res.json({
       coin,
@@ -234,7 +250,7 @@ router.get('/fees/quote', async (req: Request, res: Response) => {
       bridgeFee: (bridgeFeeUsd / coinPrice).toFixed(coin === 'SOL' ? 6 : 2),
       totalFee: (bridgeFeeUsd / coinPrice).toFixed(coin === 'SOL' ? 6 : 2),
       dccReceived: String(dccReceived),
-      rate: 1 / config.dccPriceUsd,
+      rate: 1 / dccPriceUsd,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
