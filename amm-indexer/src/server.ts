@@ -42,6 +42,7 @@ import { PoolPoller } from './poller';
 import { IndexerConfig } from './types';
 import { getSwaggerSpec } from './swagger';
 import { AmmSdk } from '@dcc-amm/sdk';
+import { createRateLimiter } from './rate-limit';
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -151,6 +152,8 @@ export function startServer(
     chainId: process.env.CHAIN_ID || '?',
   });
 
+  const checkRateLimit = createRateLimiter({ windowMs: 60_000, max: 120 });
+
   const server = http.createServer(async (req, res) => {
     const { path, query } = parseUrl(req.url || '/');
     const segments = path.split('/').filter(Boolean);
@@ -165,6 +168,11 @@ export function startServer(
       });
       res.end();
       return;
+    }
+
+    if (!checkRateLimit(req)) {
+      res.setHeader('Retry-After', '60');
+      return json(res, { error: 'Too many requests' }, 429);
     }
 
     try {
