@@ -64,7 +64,6 @@ func keyPoolLpSupply(pid: String) = "pool:lpSupply:" + pid
 func keyPoolSwaps(pid: String)    = "pool:swaps:" + pid
 func keyPoolT0(pid: String)     = "pool:t0:" + pid
 func keyPoolT1(pid: String)     = "pool:t1:" + pid
-func keyEligibilityTracker() = "config:eligibilityTracker"
 func keyTreasury()             = "config:treasury"
 func keyProtocolFeePct()       = "config:protocolFeePct"
 func keyCoreAddr()  = "coreAddr"
@@ -146,12 +145,11 @@ func swapExactIn(
   )
   # Protocol fee transfer to treasury
   let protocolFeeActions = if (protocolFee > 0 && treasuryStr != "") then [ScriptTransfer(Address(treasuryStr.fromBase58String()), protocolFee, inAssetBytes)] else nil
-  let trackerStr = tryGetStringFrom(core, keyEligibilityTracker())
+  # Swapping must never be blockable by an optional integration — same
+  # reasoning as PoolCore's removeLiquidity/addLiquidity. A misconfigured or
+  # unscripted tracker address used to brick every swap atomically.
   let refundActions = if (refund > 0) then [ScriptTransfer(i.caller, refund, inAssetBytes)] else nil
-  if (trackerStr != "") then {
-    strict trackSwap = invoke(Address(trackerStr.fromBase58String()), "recordSwap", [i.caller.toString(), this.toString()], [])
-    protocolFeeActions ++ refundActions ++ nil
-  } else protocolFeeActions ++ refundActions
+  protocolFeeActions ++ refundActions
 }
 # ── swapReadOnly — off-chain quote (no state changes) ───────
 @Callable(i)

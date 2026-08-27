@@ -106,7 +106,6 @@ func getPoolLpAssetId(pid: String) = tryGetString(keyPoolLpAssetId(pid))
 func isPaused()       = tryGetBoolean(keyPaused())
 func getAdmin()       = tryGetString(keyAdmin())
 func getRouter()      = tryGetString(keyRouter())
-func getTrackerAddr() = tryGetString(keyEligibilityTracker())
 func getTreasury()    = tryGetString(keyTreasury())
 func getProtocolFeePct() = tryGetInteger(keyProtocolFeePct())
 func must(condition: Boolean, err: String) = {
@@ -357,11 +356,9 @@ func addLiquidity(
     let w0 = if (refund0 > 0) then base :+ ScriptTransfer(i.caller, refund0, getAssetBytes(t0)) else base
     if (refund1 > 0) then w0 :+ ScriptTransfer(i.caller, refund1, getAssetBytes(t1)) else w0
   }
-  let ta = getTrackerAddr()
-  let trackTarget = if (ta != "") then Address(ta.fromBase58String()) else this
-  let trackFunc = if (ta != "") then "recordLpAdd" else "noOp"
-  let trackArgs = if (ta != "") then [callerAddr, pid, this.toString()] else []
-  strict trackLpAdd = invoke(trackTarget, trackFunc, trackArgs, [])
+  # Depositing must never be blockable by an optional integration — same
+  # reasoning as removeLiquidity. A misconfigured/unscripted tracker address
+  # used to brick every deposit atomically; it's simply not invoked anymore.
   actions
 }
 # ── removeLiquidity ─────────────────────────────────────────
