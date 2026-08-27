@@ -148,7 +148,7 @@ export function startServer(
     nodeUrl: config.nodeUrl,
     dAppAddress: config.dAppAddress,
     routerAddress: process.env.ROUTER_ADDRESS || config.dAppAddress,
-    chainId: 'D',
+    chainId: process.env.CHAIN_ID || '?',
   });
 
   const server = http.createServer(async (req, res) => {
