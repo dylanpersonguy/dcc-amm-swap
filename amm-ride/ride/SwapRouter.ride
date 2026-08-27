@@ -78,11 +78,12 @@ func getCoreAddr()  = {
 }
 func paymentAmount(payments: List[AttachedPayment], assetStr: String) = {
   let assetBytes = getAssetBytes(assetStr)
-  func finder(accum: Int, pmt: AttachedPayment) = {
-    if (pmt.assetId == assetBytes) then pmt.amount else accum
+  func finder(accum: (Int, Boolean), pmt: AttachedPayment) = {
+    let (sum, found) = accum
+    if (pmt.assetId == assetBytes) then (sum + pmt.amount, true) else (sum, found)
   }
-  let result = FOLD<10>(payments, -1, finder)
-  if (result == -1) then throw("E_NO_PMT: " + assetStr)
+  let (result, found) = FOLD<10>(payments, (0, false), finder)
+  if (!found) then throw("E_NO_PMT: " + assetStr)
   else result
 }
 # ── swapExactIn — user-facing swap ──────────────────────────
@@ -140,7 +141,7 @@ func swapExactIn(
   strict applyResult = invoke(
     core,
     "applySwap",
-    [pid, newR0, newR1, 0, amountOut, assetOut, i.caller.toString(), vol0Delta, vol1Delta, fee0Delta, fee1Delta],
+    [pid, newR0, newR1, amountOut, assetOut, i.caller.toString(), vol0Delta, vol1Delta, fee0Delta, fee1Delta],
     [AttachedPayment(inAssetBytes, coreInput)]
   )
   # Protocol fee transfer to treasury

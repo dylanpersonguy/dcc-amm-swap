@@ -180,11 +180,12 @@ func kNotDecreased(newR0: Int, newR1: Int, prevR0: Int, prevR1: Int) = {
 }
 func paymentAmount(payments: List[AttachedPayment], assetStr: String) = {
   let assetBytes = getAssetBytes(assetStr)
-  func finder(accum: Int, pmt: AttachedPayment) = {
-    if (pmt.assetId == assetBytes) then pmt.amount else accum
+  func finder(accum: (Int, Boolean), pmt: AttachedPayment) = {
+    let (sum, found) = accum
+    if (pmt.assetId == assetBytes) then (sum + pmt.amount, true) else (sum, found)
   }
-  let result = FOLD<10>(payments, -1, finder)
-  if (result == -1) then throw("E_NO_PMT: " + assetStr)
+  let (result, found) = FOLD<10>(payments, (0, false), finder)
+  if (!found) then throw("E_NO_PMT: " + assetStr)
   else result
 }
 func checkReserveCap(r0: Int, r1: Int) = {
@@ -334,9 +335,16 @@ func addLiquidity(
         issueAction,
         StringEntry(keyPoolLpAssetId(pid), lpAssetId.toBase58String()),
         IntegerEntry(keyLpTokenCount(), lpNum),
-        ScriptTransfer(i.caller, lpMinted, lpAssetId)
+        ScriptTransfer(i.caller, lpMinted, lpAssetId),
+        BooleanEntry(keyLpClaimed(pid, callerAddr), true)
       ]
     }
+    # The triggering caller already receives real tokens via ScriptTransfer above
+    # in BOTH branches — only bump the internal ledger (and mark claimed, matching
+    # the fresh-pool branch) when THIS call is the one minting the real LP token
+    # for the first time; a plain Reissue means it already exists and the caller's
+    # ledger entry must stay untouched, or claimLpTokens could pay them a second
+    # time out of the stash reserved for pre-existing legacy holders.
     let lpBalUpdate = if (lpAssetIdStr != "") then nil
       else [IntegerEntry(keyLpBalance(pid, callerAddr), currentLp + lpMinted)]
     let base = [
@@ -373,15 +381,7 @@ func removeLiquidity(
   let userLp = getLpBalance(pid, callerAddr)
   let lpAssetIdStr = getPoolLpAssetId(pid)
   let hasLpToken = lpAssetIdStr != ""
-  let lpPaid = if (hasLpToken) then {
-    let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
-    func lpFinder(accum: Int, pmt: AttachedPayment) = {
-      if (pmt.assetId == lpAssetIdBytes) then pmt.amount else accum
-    }
-    let found = FOLD<10>(i.payments, -1, lpFinder)
-    if (found == -1) then throw("E_NO_LP_PMT")
-    else found
-  } else 0
+  let lpPaid = if (hasLpToken) then paymentAmount(i.payments, lpAssetIdStr) else 0
   strict chkLpPaid = if (hasLpToken) then {
     must(lpPaid >= lpAmount, "E_LOW_LP_PMT")
   } else {
@@ -409,39 +409,53 @@ func removeLiquidity(
   } else nil
   let lpBalActions = if (hasLpToken) then nil
     else [IntegerEntry(keyLpBalance(pid, callerAddr), userLp - lpAmount)]
-  let stillHasLpInThisPool = if (hasLpToken) then false else (userLp - lpAmount) > 0
-  let stillHasAnyLp = stillHasLpInThisPool
-  let removeActions = [
+  let baseActions = [
     IntegerEntry(keyPoolR0(pid), newR0),
     IntegerEntry(keyPoolR1(pid), newR1),
     IntegerEntry(keyPoolLpSupply(pid), newSupply),
     IntegerEntry(keyPoolLastK(pid), 0),
-    IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1),
-    ScriptTransfer(i.caller, amount0Out, getAssetBytes(t0)),
-    ScriptTransfer(i.caller, amount1Out, getAssetBytes(t1))
+    IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1)
   ] ++ lpBalActions ++ lpBurnActions
-  let ta3 = getTrackerAddr()
-  let trackTarget3 = if (ta3 != "") then Address(ta3.fromBase58String()) else this
-  let trackFunc3 = if (ta3 != "") then "recordLpRemove" else "noOp"
-  let trackArgs3 = if (ta3 != "") then [callerAddr, pid, this.toString(), stillHasAnyLp, stillHasLpInThisPool] else []
-  strict trackLpRemove = invoke(trackTarget3, trackFunc3, trackArgs3, [])
-  removeActions
+  let w0 = if (amount0Out > 0) then baseActions :+ ScriptTransfer(i.caller, amount0Out, getAssetBytes(t0)) else baseActions
+  # Withdrawals must never be blockable by an optional integration (e.g. a
+  # misconfigured eligibility tracker) — unlike addLiquidity, this path does
+  # not depend on that invoke at all.
+  if (amount1Out > 0) then w0 :+ ScriptTransfer(i.caller, amount1Out, getAssetBytes(t1)) else w0
 }
 # ── applySwap — called by Router contract only ─────────────
 @Callable(i)
 func applySwap(
   pid: String,
-  newR0: Int, newR1: Int, newK: Int,
+  newR0: Int, newR1: Int,
   amountOut: Int, outAsset: String,
   recipient: String,
   vol0Delta: Int, vol1Delta: Int,
   fee0Delta: Int, fee1Delta: Int
 ) = {
   strict chkRouter = must(i.caller.toString() == getRouter(), "E_NOT_ROUTER")
+  strict chkNp = must(!isPaused(), "E_PAUSED")
   strict chkEx = must(poolExists(pid), "E_NO_POOL: " + pid)
+  let t0 = getT0(pid)
+  let t1 = getT1(pid)
+  strict chkOutAsset = must(outAsset == t0 || outAsset == t1, "E_BAD_OUT_ASSET")
   let prevR0 = getR0(pid)
   let prevR1 = getR1(pid)
   strict chkK = must(kNotDecreased(newR0, newR1, prevR0, prevR1), "E_K_DECREASED")
+  strict chkCap = checkReserveCap(newR0, newR1)
+  # Never trust Router's numbers as-is — independently tie amountOut to the
+  # actual reserve delta it's writing, and require a real matching payment
+  # for the "in" side, so applySwap alone (even if router is ever reassigned
+  # to a malicious or buggy address) can never move more than a real,
+  # k-invariant-respecting trade's worth of value.
+  let isOutT0 = (outAsset == t0)
+  let (expectedOutDelta, inAsset, expectedInDelta) = if (isOutT0)
+    then (prevR0 - newR0, t1, newR1 - prevR1)
+    else (prevR1 - newR1, t0, newR0 - prevR0)
+  strict chkOutMatch = must(amountOut == expectedOutDelta, "E_OUT_MISMATCH")
+  strict chkOutPos = must(amountOut > 0, "E_ZERO_OUT")
+  strict chkInPos = must(expectedInDelta > 0, "E_ZERO_IN")
+  let paidIn = paymentAmount(i.payments, inAsset)
+  strict chkInMatch = must(paidIn == expectedInDelta, "E_IN_MISMATCH")
   [
     IntegerEntry(keyPoolR0(pid), newR0),
     IntegerEntry(keyPoolR1(pid), newR1),
@@ -463,10 +477,7 @@ func lockLiquidity(assetA: String, assetB: String, feeBps: Int) = {
   let lpAssetIdStr = getPoolLpAssetId(pid)
   strict chkLp = must(lpAssetIdStr != "", "E_NO_LP_TOKEN")
   let lpAssetIdBytes = lpAssetIdStr.fromBase58String()
-  func lpFinder(accum: Int, pmt: AttachedPayment) = {
-    if (pmt.assetId == lpAssetIdBytes) then pmt.amount else accum
-  }
-  let lpAmount = FOLD<10>(i.payments, -1, lpFinder)
+  let lpAmount = paymentAmount(i.payments, lpAssetIdStr)
   strict chkAmt = must(lpAmount > 0, "E_ZERO_LP")
   [
     Burn(lpAssetIdBytes, lpAmount),
