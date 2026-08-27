@@ -63,6 +63,29 @@ function bigintReplacer(_key: string, value: unknown): unknown {
   return typeof value === 'bigint' ? value.toString() : value;
 }
 
+/**
+ * Parse a positive integer amount from user input (query string or JSON
+ * body). Returns null instead of throwing — BigInt(x) throws a raw
+ * SyntaxError on malformed input, which the outer try/catch does turn into
+ * a 500, but a null here lets callers return a clean, specific 400 instead.
+ */
+function parsePositiveBigInt(value: unknown): bigint | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const str = String(value);
+  if (!/^\d+$/.test(str)) return null;
+  const n = BigInt(str);
+  return n > 0n ? n : null;
+}
+
+/** Fee tier must be within the contract's own enforced bounds (1-1000 bps). */
+function parseValidFeeBps(value: unknown, fallback = 35): number | null {
+  if (value === undefined || value === null || value === '') return fallback;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1 || n > 1000) return null;
+  return n;
+}
+
 function json(res: http.ServerResponse, data: unknown, status = 200): void {
   res.writeHead(status, {
     'Content-Type': 'application/json',
@@ -241,12 +264,17 @@ export function startServer(
         if (!assetIn || !assetOut || !amountIn) {
           return badRequest(res, 'Required query params: assetIn, assetOut, amountIn');
         }
+        const amountInParsed = parsePositiveBigInt(amountIn);
+        if (amountInParsed === null) return badRequest(res, 'amountIn must be a positive integer');
+        const feeBpsParsed = parseValidFeeBps(feeBps);
+        if (feeBpsParsed === null) return badRequest(res, 'feeBps must be an integer between 1 and 1000');
+        const slippageParsed = slippageBps !== undefined ? parsePositiveBigInt(slippageBps) ?? 0n : 50n;
         const quote = await sdk.quoteSwap(
-          BigInt(amountIn),
+          amountInParsed,
           normalizeAsset(assetIn),
           normalizeAsset(assetOut),
-          parseInt(feeBps || '35'),
-          BigInt(slippageBps || '50')
+          feeBpsParsed,
+          slippageParsed
         );
         return json(res, quote);
       }
@@ -256,12 +284,19 @@ export function startServer(
         if (!assetA || !assetB || !amountA || !amountB) {
           return badRequest(res, 'Required query params: assetA, assetB, amountA, amountB');
         }
+        const amountAParsed = parsePositiveBigInt(amountA);
+        const amountBParsed = parsePositiveBigInt(amountB);
+        if (amountAParsed === null || amountBParsed === null) {
+          return badRequest(res, 'amountA and amountB must be positive integers');
+        }
+        const feeBpsParsed = parseValidFeeBps(feeBps);
+        if (feeBpsParsed === null) return badRequest(res, 'feeBps must be an integer between 1 and 1000');
         const result = await sdk.buildAddLiquidity(
           normalizeAsset(assetA),
           normalizeAsset(assetB),
-          BigInt(amountA),
-          BigInt(amountB),
-          parseInt(feeBps || '35')
+          amountAParsed,
+          amountBParsed,
+          feeBpsParsed
         );
         return json(res, { estimate: result.estimate });
       }
@@ -271,11 +306,15 @@ export function startServer(
         if (!assetA || !assetB || !lpAmount) {
           return badRequest(res, 'Required query params: assetA, assetB, lpAmount');
         }
+        const lpAmountParsed = parsePositiveBigInt(lpAmount);
+        if (lpAmountParsed === null) return badRequest(res, 'lpAmount must be a positive integer');
+        const feeBpsParsed = parseValidFeeBps(feeBps);
+        if (feeBpsParsed === null) return badRequest(res, 'feeBps must be an integer between 1 and 1000');
         const result = await sdk.buildRemoveLiquidity(
           normalizeAsset(assetA),
           normalizeAsset(assetB),
-          parseInt(feeBps || '35'),
-          BigInt(lpAmount)
+          feeBpsParsed,
+          lpAmountParsed
         );
         return json(res, { estimate: result.estimate });
       }
@@ -294,12 +333,17 @@ export function startServer(
           if (!assetIn || !assetOut || !amountIn) {
             return badRequest(res, 'Required fields: assetIn, assetOut, amountIn');
           }
+          const amountInParsed = parsePositiveBigInt(amountIn);
+          if (amountInParsed === null) return badRequest(res, 'amountIn must be a positive integer');
+          const feeBpsParsed = parseValidFeeBps(feeBps);
+          if (feeBpsParsed === null) return badRequest(res, 'feeBps must be an integer between 1 and 1000');
+          const slippageParsed = slippageBps !== undefined ? parsePositiveBigInt(slippageBps) ?? 0n : 50n;
           const result = await sdk.buildSwap(
-            BigInt(amountIn),
+            amountInParsed,
             normalizeAsset(assetIn),
             normalizeAsset(assetOut),
-            parseInt(feeBps || '35'),
-            BigInt(slippageBps || '50'),
+            feeBpsParsed,
+            slippageParsed,
             deadline ? parseInt(deadline) : 0
           );
           return json(res, result);
@@ -310,13 +354,21 @@ export function startServer(
           if (!assetA || !assetB || !amountA || !amountB) {
             return badRequest(res, 'Required fields: assetA, assetB, amountA, amountB');
           }
+          const amountAParsed = parsePositiveBigInt(amountA);
+          const amountBParsed = parsePositiveBigInt(amountB);
+          if (amountAParsed === null || amountBParsed === null) {
+            return badRequest(res, 'amountA and amountB must be positive integers');
+          }
+          const feeBpsParsed = parseValidFeeBps(feeBps);
+          if (feeBpsParsed === null) return badRequest(res, 'feeBps must be an integer between 1 and 1000');
+          const slippageParsed = slippageBps !== undefined ? parsePositiveBigInt(slippageBps) ?? 0n : 50n;
           const result = await sdk.buildAddLiquidity(
             normalizeAsset(assetA),
             normalizeAsset(assetB),
-            BigInt(amountA),
-            BigInt(amountB),
-            parseInt(feeBps || '35'),
-            BigInt(slippageBps || '50'),
+            amountAParsed,
+            amountBParsed,
+            feeBpsParsed,
+            slippageParsed,
             deadline ? parseInt(deadline) : 0
           );
           return json(res, result);
@@ -327,12 +379,17 @@ export function startServer(
           if (!assetA || !assetB || !lpAmount) {
             return badRequest(res, 'Required fields: assetA, assetB, lpAmount');
           }
+          const lpAmountParsed = parsePositiveBigInt(lpAmount);
+          if (lpAmountParsed === null) return badRequest(res, 'lpAmount must be a positive integer');
+          const feeBpsParsed = parseValidFeeBps(feeBps);
+          if (feeBpsParsed === null) return badRequest(res, 'feeBps must be an integer between 1 and 1000');
+          const slippageParsed = slippageBps !== undefined ? parsePositiveBigInt(slippageBps) ?? 0n : 50n;
           const result = await sdk.buildRemoveLiquidity(
             normalizeAsset(assetA),
             normalizeAsset(assetB),
-            parseInt(feeBps || '35'),
-            BigInt(lpAmount),
-            BigInt(slippageBps || '50'),
+            feeBpsParsed,
+            lpAmountParsed,
+            slippageParsed,
             deadline ? parseInt(deadline) : 0
           );
           return json(res, result);
@@ -343,10 +400,12 @@ export function startServer(
           if (!assetA || !assetB) {
             return badRequest(res, 'Required fields: assetA, assetB');
           }
+          const feeBpsParsed = parseValidFeeBps(feeBps);
+          if (feeBpsParsed === null) return badRequest(res, 'feeBps must be an integer between 1 and 1000');
           const result = sdk.buildCreatePool(
             normalizeAsset(assetA),
             normalizeAsset(assetB),
-            parseInt(feeBps || '35')
+            feeBpsParsed
           );
           return json(res, result);
         }
