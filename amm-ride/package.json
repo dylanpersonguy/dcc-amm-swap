@@ -6,7 +6,7 @@
     "compile": "node scripts/compile.js",
     "deploy": "ts-node scripts/deploy.ts",
     "smoke-test": "ts-node scripts/smoke-test.ts",
-    "test": "jest --verbose"
+    "test": "jest --verbose --passWithNoTests"
   },
   "devDependencies": {
     "typescript": "^5.3.0",

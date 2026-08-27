@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build all workspaces (typecheck)
+        run: npm run build --workspaces --if-present
+
+      - name: Run test suites
+        run: npm test --workspaces --if-present
+
+  ride-compile-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compile PoolCore.ride against the real DecentralChain node
+        run: |
+          STATUS=$(curl -s -o /tmp/core.json -w "%{http_code}" -X POST \
+            "https://mainnet-node.decentralchain.io/utils/script/compileCode" \
+            -H "Content-Type: text/plain" \
+            --data-binary @amm-ride/ride/PoolCore.ride)
+          cat /tmp/core.json
+          if [ "$STATUS" != "200" ] || grep -q '"error"' /tmp/core.json; then
+            echo "PoolCore.ride failed to compile"
+            exit 1
+          fi
+
+      - name: Compile SwapRouter.ride against the real DecentralChain node
+        run: |
+          STATUS=$(curl -s -o /tmp/router.json -w "%{http_code}" -X POST \
+            "https://mainnet-node.decentralchain.io/utils/script/compileCode" \
+            -H "Content-Type: text/plain" \
+            --data-binary @amm-ride/ride/SwapRouter.ride)
+          cat /tmp/router.json
+          if [ "$STATUS" != "200" ] || grep -q '"error"' /tmp/router.json; then
+            echo "SwapRouter.ride failed to compile"
+            exit 1
+          fi
