@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Cross-chain bridge API — SOL/USDT/USDC (Solana) → DCC (DecentralChain)",
   "main": "dist/index.js",
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
