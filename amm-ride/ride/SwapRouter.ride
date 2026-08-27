@@ -109,8 +109,11 @@ func swapExactIn(
   let resIn  = if (isInT0) then res0 else res1
   let resOut = if (isInT0) then res1 else res0
   let fee = tryGetIntegerFrom(core, keyPoolFee(pid))
-  let amountInWithFee = amountIn * (FeeScale - fee)
-  let denominator = resIn * FeeScale + amountInWithFee
+  # fraction(x, y, 1) routes the multiplication through a 128-bit
+  # intermediate — a bare `x * y` here can overflow Int64 once resIn
+  # grows large, silently corrupting the swap math.
+  let amountInWithFee = fraction(amountIn, FeeScale - fee, 1)
+  let denominator = fraction(resIn, FeeScale, 1) + amountInWithFee
   strict chkDenom = must(denominator > 0, "E_DIV_ZERO")
   let amountOut = fraction(amountInWithFee, resOut, denominator)
   strict chkOutPos = must(amountOut > 0, "E_ZERO_OUT")
@@ -164,8 +167,8 @@ func swapReadOnly(assetIn: String, assetOut: String, feeBps: Int, amountIn: Int)
   let isInT0 = (assetIn == t0)
   let resIn  = if (isInT0) then res0 else res1
   let resOut = if (isInT0) then res1 else res0
-  let amountInWithFee = amountIn * (FeeScale - fee)
-  let denominator = resIn * FeeScale + amountInWithFee
+  let amountInWithFee = fraction(amountIn, FeeScale - fee, 1)
+  let denominator = fraction(resIn, FeeScale, 1) + amountInWithFee
   let amountOut = if (denominator > 0) then fraction(amountInWithFee, resOut, denominator) else 0
   ([], amountOut)
 }

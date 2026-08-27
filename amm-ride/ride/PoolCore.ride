@@ -12,6 +12,9 @@ let minFeeBps     = 1
 let maxFeeBps     = 1000
 let defaultFeeBps = 35
 let minLiquidity  = 1000
+# Safety ceiling on a single reserve side, well below the point where
+# SwapRouter's resIn * FeeScale intermediate would risk overflowing Int64.
+let maxReserve    = 100000000000000
 let dccStr        = "DCC"
 let lockedLpAddr  = "LOCKED"
 func getAssetString(assetId: ByteVector|Unit) = {
@@ -109,6 +112,9 @@ func getProtocolFeePct() = tryGetInteger(keyProtocolFeePct())
 func must(condition: Boolean, err: String) = {
   if (!condition) then throw(err) else true
 }
+func requireAdmin(caller: Address) = {
+  must(caller == this || caller.toString() == getAdmin(), "E_NOT_ADMIN")
+}
 func isqrt(n: Int) = {
   if (n < 0) then throw("E_SQRT_NEG")
   else if (n == 0) then 0
@@ -180,6 +186,10 @@ func paymentAmount(payments: List[AttachedPayment], assetStr: String) = {
   let result = FOLD<10>(payments, -1, finder)
   if (result == -1) then throw("E_NO_PMT: " + assetStr)
   else result
+}
+func checkReserveCap(r0: Int, r1: Int) = {
+  strict c0 = must(r0 <= maxReserve, "E_RESERVE_CAP_0")
+  must(r1 <= maxReserve, "E_RESERVE_CAP_1")
 }
 func mapAmountsToTokens(assetA: String, assetB: String, amountA: Int, amountB: Int, t0: String, t1: String) = {
   if (assetA == t0 && assetB == t1) then (amountA, amountB)
@@ -256,6 +266,7 @@ func addLiquidity(
   let supply = getLpSupply(pid)
   let callerAddr = i.caller.toString()
   let actions = if (res0 == 0 && res1 == 0 && supply == 0) then {
+    strict chkCap = checkReserveCap(desired0, desired1)
     let sqrtK = sqrtProduct(desired0, desired1)
     strict chkLiq = must(sqrtK > minLiquidity, "E_LOW_LIQ")
     let lpMinted = sqrtK - minLiquidity
@@ -301,6 +312,7 @@ func addLiquidity(
     strict chkLpPos = must(lpMinted > 0, "E_DUST")
     let newR0 = res0 + used0
     let newR1 = res1 + used1
+    strict chkCap = checkReserveCap(newR0, newR1)
     let newSupply = supply + lpMinted
     let currentLp = getLpBalance(pid, callerAddr)
     let refund0 = pay0 - used0
@@ -458,6 +470,7 @@ func lockLiquidity(assetA: String, assetB: String, feeBps: Int) = {
   strict chkAmt = must(lpAmount > 0, "E_ZERO_LP")
   [
     Burn(lpAssetIdBytes, lpAmount),
+    IntegerEntry(keyPoolLpSupply(pid), getLpSupply(pid) - lpAmount),
     IntegerEntry(keyPoolLiqEvents(pid), tryGetInteger(keyPoolLiqEvents(pid)) + 1)
   ]
 }
@@ -487,34 +500,39 @@ func noOp() = {
   nil
 }
 @Callable(i)
+func setAdmin(newAdminAddr: String) = {
+  strict chk = requireAdmin(i.caller)
+  [StringEntry(keyAdmin(), newAdminAddr)]
+}
+@Callable(i)
 func setEligibilityTracker(address: String) = {
-  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  strict chk = requireAdmin(i.caller)
   [StringEntry(keyEligibilityTracker(), address)]
 }
 @Callable(i)
 func setTreasury(address: String) = {
-  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  strict chk = requireAdmin(i.caller)
   [StringEntry(keyTreasury(), address)]
 }
 @Callable(i)
 func setProtocolFee(pct: Int) = {
-  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  strict chk = requireAdmin(i.caller)
   strict chkRange = must(pct >= 0 && pct <= 5000, "E_FEE_RANGE")
   [IntegerEntry(keyProtocolFeePct(), pct)]
 }
 @Callable(i)
 func pause() = {
-  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  strict chk = requireAdmin(i.caller)
   [BooleanEntry(keyPaused(), true)]
 }
 @Callable(i)
 func unpause() = {
-  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  strict chk = requireAdmin(i.caller)
   [BooleanEntry(keyPaused(), false)]
 }
 @Callable(i)
 func setRouter(routerAddr: String) = {
-  strict chk = must(i.caller == this || i.caller.toString() == getAdmin(), "E_NOT_ADMIN")
+  strict chk = requireAdmin(i.caller)
   [StringEntry(keyRouter(), routerAddr)]
 }
 @Callable(i)
