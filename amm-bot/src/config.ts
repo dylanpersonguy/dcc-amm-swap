@@ -14,8 +14,11 @@ export const config = {
   /** DCC mainnet node */
   nodeUrl: process.env.NODE_URL || 'https://mainnet-node.decentralchain.io',
 
-  /** AMM dApp address */
+  /** AMM Pool Core dApp address (createPool/addLiquidity/removeLiquidity) */
   dAppAddress: process.env.DAPP_ADDRESS || '3Da7xwRRtXfkA46jaKTYb75Usd2ZNWdY6HX',
+
+  /** AMM Swap Router dApp address (swapExactIn) — falls back to dAppAddress */
+  routerAddress: process.env.ROUTER_ADDRESS || process.env.DAPP_ADDRESS || '3Da7xwRRtXfkA46jaKTYb75Usd2ZNWdY6HX',
 
   /** DCC chain ID */
   chainId: process.env.CHAIN_ID || '?',

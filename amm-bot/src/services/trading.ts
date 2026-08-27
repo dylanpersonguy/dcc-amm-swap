@@ -21,6 +21,7 @@ import { getAssetInfo } from './wallet';
 const sdk = new AmmSdk({
   nodeUrl: config.nodeUrl,
   dAppAddress: config.dAppAddress,
+  routerAddress: config.routerAddress,
   chainId: config.chainId,
 });
 
