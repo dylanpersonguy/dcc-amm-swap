@@ -14,7 +14,16 @@ import fs from 'fs';
 
 // ── Encryption ─────────────────────────────────────────────────────
 
-const SERVER_SECRET = process.env.ENCRYPTION_SECRET || 'dcc-amm-bot-default-secret-change-me';
+// No fallback default here on purpose — a silent fallback to a fixed,
+// source-visible string would mean any future deploy that forgets to set
+// this env var quietly downgrades every user's wallet encryption to a key
+// anyone reading this repo already knows. Fail loudly instead.
+if (!process.env.ENCRYPTION_SECRET) {
+  throw new Error(
+    'ENCRYPTION_SECRET environment variable is required — refusing to start with wallet encryption unconfigured.',
+  );
+}
+const SERVER_SECRET = process.env.ENCRYPTION_SECRET;
 
 function deriveKey(userId: number): Buffer {
   return crypto.pbkdf2Sync(
@@ -391,7 +400,8 @@ export function getTradeCount(userId: number): number {
 // ── Referral System ────────────────────────────────────────────────
 
 /**
- * Record a referral — returns true if newly recorded, false if user was already referred.
+ * Record a referral — returns true if newly recorded, false if user was already
+ * referred, would create a cycle, or would exceed the max commission-chain depth.
  */
 export function recordReferral(referrerUserId: number, referredUserId: number): boolean {
   // Can't refer yourself
@@ -402,6 +412,18 @@ export function recordReferral(referrerUserId: number, referredUserId: number): 
     'SELECT id FROM referrals WHERE referred_user_id = ?'
   ).get(referredUserId);
   if (existing) return false;
+
+  // Reject anything that would create a cycle — e.g. A refers B, then B refers A.
+  // Each of those two calls looks fine in isolation (different users, referredUserId
+  // had no referrer yet), but together they let two colluding accounts credit
+  // referral rewards back to each other on every trade either one makes. Walk up
+  // referrerUserId's own referral chain; if referredUserId shows up anywhere in
+  // it, adding this edge would close a loop.
+  let ancestor: number | null = referrerUserId;
+  for (let hops = 0; hops < 32 && ancestor !== null; hops++) {
+    if (ancestor === referredUserId) return false;
+    ancestor = getReferrer(ancestor);
+  }
 
   db.prepare(
     'INSERT INTO referrals (referrer_user_id, referred_user_id) VALUES (?, ?)'
