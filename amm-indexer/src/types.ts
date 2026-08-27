@@ -58,6 +58,7 @@ export interface PoolStats {
 export interface IndexerConfig {
   nodeUrl: string;
   dAppAddress: string;
+  routerAddress: string;
   pollIntervalMs: number;
   dataDir: string;
 }

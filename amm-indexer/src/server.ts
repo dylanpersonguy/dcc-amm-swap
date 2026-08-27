@@ -352,7 +352,13 @@ export function startServer(
         const pools = await sdk.listPools();
         const positions = [];
         for (const pool of pools) {
-          const lpBalance = await sdk.getLpBalance(pool.poolId, address);
+          // Once a pool has a real LP token, its balance is the on-chain asset
+          // balance — the contract's internal ledger (getLpBalance) is only
+          // ever written once, at first deposit, and never updated by later
+          // removeLiquidity/lockLiquidity calls once a real token exists.
+          const lpBalance = pool.lpAssetId
+            ? await sdk.getBalance(address, pool.lpAssetId)
+            : await sdk.getLpBalance(pool.poolId, address);
           if (lpBalance > 0n) {
             const sharePercent = pool.lpSupply > 0n
               ? Number((lpBalance * 10000n) / pool.lpSupply) / 100
@@ -419,6 +425,7 @@ if (require.main === module) {
   const config: IndexerConfig = {
     nodeUrl: process.env.NODE_URL || 'https://mainnet-node.decentralchain.io',
     dAppAddress: process.env.DAPP_ADDRESS || '',
+    routerAddress: process.env.ROUTER_ADDRESS || process.env.DAPP_ADDRESS || '',
     pollIntervalMs: parseInt(process.env.POLL_INTERVAL || '10000'),
     dataDir: process.env.DATA_DIR || './data',
   };

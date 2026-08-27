@@ -1,15 +1,20 @@
 /**
  * Pool poller — periodically reads pool state from the node and updates the store.
+ * Also scans recent Router transactions for swapExactIn calls, since pool state
+ * alone carries no history of individual swaps.
  */
 
 import { NodeClient } from '@dcc-amm/sdk';
 import { IndexerStore } from './store';
-import { PoolSnapshot, IndexerConfig } from './types';
+import { PoolSnapshot, SwapEvent, IndexerConfig } from './types';
+
+const SWAP_SCAN_LIMIT = 100;
 
 export class PoolPoller {
   private readonly client: NodeClient;
   private readonly store: IndexerStore;
   private readonly config: IndexerConfig;
+  private readonly seenSwapTxIds = new Set<string>();
   private timer: NodeJS.Timeout | null = null;
 
   constructor(config: IndexerConfig, store: IndexerStore) {
@@ -91,8 +96,68 @@ export class PoolPoller {
       console.log(
         `[PoolPoller] Updated ${updated}/${pools.length} pools at height ${height}`
       );
+
+      await this.pollSwaps();
     } catch (err) {
       console.error('[PoolPoller] Poll error:', err);
+    }
+  }
+
+  /**
+   * Pool state alone has no record of individual swaps, so scan the Router's
+   * recent transactions directly. stateChanges.invokes[0] (the nested call to
+   * Core.applySwap) carries the authoritative pool id and the resulting real
+   * transfer, so we read from there rather than re-deriving from swapExactIn's
+   * own input args.
+   */
+  private async pollSwaps(): Promise<void> {
+    if (!this.config.routerAddress) return;
+    try {
+      const res = await fetch(
+        `${this.config.nodeUrl}/transactions/address/${this.config.routerAddress}/limit/${SWAP_SCAN_LIMIT}`
+      );
+      if (!res.ok) return;
+      const pages = (await res.json()) as any[][];
+      const txs = pages[0] ?? [];
+
+      for (const tx of txs) {
+        if (
+          tx.type !== 16 ||
+          tx.call?.function !== 'swapExactIn' ||
+          tx.applicationStatus !== 'succeeded' ||
+          this.seenSwapTxIds.has(tx.id)
+        ) {
+          continue;
+        }
+
+        const applySwapCall = tx.stateChanges?.invokes?.[0]?.call;
+        const transfer = tx.stateChanges?.invokes?.[0]?.stateChanges?.transfers?.[0];
+        if (!applySwapCall || !transfer) {
+          // Doesn't match the expected shape (e.g. a pre-upgrade tx) — skip rather than guess.
+          this.seenSwapTxIds.add(tx.id);
+          continue;
+        }
+
+        const poolKey = applySwapCall.args?.[0]?.value;
+        const [assetIn, assetOut, , amountIn] = tx.call.args.map((a: any) => a.value);
+
+        const event: SwapEvent = {
+          txId: tx.id,
+          poolKey,
+          sender: tx.sender,
+          inputAsset: assetIn,
+          outputAsset: assetOut,
+          amountIn: String(amountIn),
+          amountOut: String(transfer.amount),
+          feeBps: Number(tx.call.args[2].value),
+          blockHeight: tx.height,
+          timestamp: tx.timestamp,
+        };
+        this.store.addSwap(event);
+        this.seenSwapTxIds.add(tx.id);
+      }
+    } catch (err) {
+      console.error('[PoolPoller] Swap scan error:', err);
     }
   }
 }
