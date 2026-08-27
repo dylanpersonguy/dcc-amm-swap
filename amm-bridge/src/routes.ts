@@ -4,6 +4,7 @@
 
 import { Router, Request, Response } from 'express';
 import { v4 as uuid } from 'uuid';
+import { validators } from '@decentralchain/transactions';
 import { config } from './config';
 import * as db from './db';
 import * as solana from './solana';
@@ -11,6 +12,34 @@ import { processDeposit } from './dcc';
 import { getDccPriceUsd } from './pricing';
 
 const router = Router();
+
+/**
+ * Shared validation for both deposit-creation endpoints. Rejects malformed
+ * input with a clear 400 instead of letting it silently produce garbage
+ * (NaN propagating through dccAmount, an order created against a
+ * recipient address that can never actually be paid out, etc).
+ */
+function validateDepositInput(body: any, allowedCoins: string[]): string | null {
+  const { coin, amountUsd, dccRecipient, userId } = body;
+
+  if (!coin || !amountUsd || !dccRecipient || !userId) {
+    return 'Required fields: coin, amountUsd, dccRecipient, userId';
+  }
+  if (!allowedCoins.includes(coin)) {
+    return `coin must be one of: ${allowedCoins.join(', ')}`;
+  }
+  if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd <= 0) {
+    return 'amountUsd must be a positive finite number';
+  }
+  const userIdNum = Number(userId);
+  if (!Number.isInteger(userIdNum) || userIdNum <= 0) {
+    return 'userId must be a positive integer';
+  }
+  if (!validators.isValidAddress(dccRecipient, config.dccChainId.charCodeAt(0))) {
+    return 'dccRecipient is not a valid DecentralChain address';
+  }
+  return null;
+}
 
 // ── Health ─────────────────────────────────────────────────────────
 
@@ -79,11 +108,9 @@ router.get('/deposit/limits', async (_req: Request, res: Response) => {
 
 router.post('/deposit', async (req: Request, res: Response) => {
   try {
+    const validationError = validateDepositInput(req.body, ['SOL']);
+    if (validationError) return res.status(400).json({ error: validationError });
     const { coin, amountUsd, dccRecipient, userId } = req.body;
-
-    if (!coin || !amountUsd || !dccRecipient || !userId) {
-      return res.status(400).json({ error: 'Missing required fields: coin, amountUsd, dccRecipient, userId' });
-    }
 
     const orderId = uuid();
     const depositKeypair = solana.generateDepositKeypair(orderId);
@@ -139,15 +166,9 @@ router.post('/deposit', async (req: Request, res: Response) => {
 
 router.post('/deposit/spl', async (req: Request, res: Response) => {
   try {
+    const validationError = validateDepositInput(req.body, ['USDT', 'USDC']);
+    if (validationError) return res.status(400).json({ error: validationError });
     const { coin, amountUsd, dccRecipient, userId } = req.body;
-
-    if (!coin || !amountUsd || !dccRecipient || !userId) {
-      return res.status(400).json({ error: 'Missing required fields: coin, amountUsd, dccRecipient, userId' });
-    }
-
-    if (!['USDT', 'USDC'].includes(coin)) {
-      return res.status(400).json({ error: 'SPL deposit only supports USDT and USDC' });
-    }
 
     const orderId = uuid();
     const depositKeypair = solana.generateDepositKeypair(orderId);
