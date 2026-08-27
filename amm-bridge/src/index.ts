@@ -14,13 +14,22 @@ import { initSolana, checkPendingDeposits, getTreasuryKeypair } from './solana';
 import { processDeposit, resweepStaleOrders } from './dcc';
 import routes from './routes';
 import { getSwaggerSpec } from './swagger';
+import { rateLimit } from './rate-limit';
 
 const app = express();
+// Railway sits in front of this as a reverse proxy — without this, req.ip
+// resolves to Railway's edge for every request, collapsing the rate limiter
+// to one shared bucket across all clients instead of one per real client.
+app.set('trust proxy', true);
 
 // ── Middleware ──────────────────────────────────────────────────────
 
 app.use(cors());
 app.use(express.json());
+app.use(rateLimit({ windowMs: 60_000, max: 60 }));
+// Order creation does real work (keypair derivation, a DB write) per call —
+// a tighter limit than the general one above.
+app.use(['/deposit', '/deposit/spl'], rateLimit({ windowMs: 60_000, max: 10 }));
 
 // Swagger UI
 app.use('/docs', swaggerUi.serve, swaggerUi.setup(getSwaggerSpec(), {
