@@ -10,8 +10,8 @@ import cors from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import { config } from './config';
 import * as db from './db';
-import { initSolana, checkPendingDeposits } from './solana';
-import { processDeposit } from './dcc';
+import { initSolana, checkPendingDeposits, getTreasuryKeypair } from './solana';
+import { processDeposit, resweepStaleOrders } from './dcc';
 import routes from './routes';
 import { getSwaggerSpec } from './swagger';
 
@@ -52,6 +52,7 @@ async function start(): Promise<void> {
   // Initialize Solana connection
   initSolana();
   console.log('  ✅ Solana connection ready');
+  console.log(`  🏦 Treasury address (sweep destination — fund with ~0.05 SOL for fees): ${getTreasuryKeypair().publicKey.toBase58()}`);
 
   // Start deposit monitoring loop (every 20 seconds)
   const POLL_INTERVAL = 20_000;
@@ -65,6 +66,18 @@ async function start(): Promise<void> {
     }
   }, POLL_INTERVAL);
   console.log(`  ✅ Deposit monitor running (every ${POLL_INTERVAL / 1000}s)`);
+
+  // Retry sweeping any completed order that didn't make it to treasury yet
+  // (transient RPC failure, treasury briefly out of fee SOL, etc).
+  const SWEEP_RETRY_INTERVAL = 5 * 60_000;
+  setInterval(async () => {
+    try {
+      await resweepStaleOrders();
+    } catch (err) {
+      console.error('Sweep retry error:', err);
+    }
+  }, SWEEP_RETRY_INTERVAL);
+  console.log(`  ✅ Sweep retry running (every ${SWEEP_RETRY_INTERVAL / 60_000}m)`);
 
   // Start Express server
   app.listen(config.port, () => {

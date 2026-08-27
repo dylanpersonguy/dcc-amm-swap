@@ -10,6 +10,9 @@ import {
   Keypair,
   PublicKey,
   LAMPORTS_PER_SOL,
+  Transaction,
+  SystemProgram,
+  sendAndConfirmTransaction,
 } from '@solana/web3.js';
 import { config } from './config';
 import * as db from './db';
@@ -36,6 +39,21 @@ export function generateDepositKeypair(orderId: string): Keypair {
     .update(`dcc-bridge:${orderId}:${config.solanaAdminSeed || 'default'}`)
     .digest();
   // Use first 32 bytes as Ed25519 seed
+  return Keypair.fromSeed(seed.subarray(0, 32));
+}
+
+/**
+ * The bridge's own Solana wallet — sweep destination and fee payer for every
+ * sweep. Derived the same deterministic way as deposit keypairs but with a
+ * fixed label instead of a per-order id, so it never needs a separate secret.
+ * Must be funded with a small amount of real SOL (covers tx fees only —
+ * a few thousand lamports per sweep, so even 0.05 SOL covers thousands).
+ */
+export function getTreasuryKeypair(): Keypair {
+  const crypto = require('crypto');
+  const seed = crypto.createHash('sha256')
+    .update(`dcc-bridge:treasury:${config.solanaAdminSeed || 'default'}`)
+    .digest();
   return Keypair.fromSeed(seed.subarray(0, 32));
 }
 
@@ -196,4 +214,61 @@ export async function checkPendingDeposits(
       console.error(`Error checking deposit for ${order.id}:`, err);
     }
   }
+}
+
+// ── Fund sweeping ────────────────────────────────────────────────────
+
+/**
+ * Move a completed order's deposit from its per-order address to the
+ * treasury. The treasury is always the fee payer (and co-signs), so the
+ * deposit address itself never needs its own SOL for fees — this matters
+ * especially for SPL deposits, where the user only ever sends the token,
+ * never extra SOL.
+ */
+export async function sweepDeposit(orderId: string, coin: string): Promise<string | null> {
+  const depositKeypair = generateDepositKeypair(orderId);
+  const treasuryKeypair = getTreasuryKeypair();
+
+  if (coin === 'SOL') {
+    const lamports = await connection.getBalance(depositKeypair.publicKey);
+    if (lamports <= 0) return null;
+
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: depositKeypair.publicKey,
+        toPubkey: treasuryKeypair.publicKey,
+        lamports,
+      }),
+    );
+    tx.feePayer = treasuryKeypair.publicKey;
+    const sig = await sendAndConfirmTransaction(connection, tx, [treasuryKeypair, depositKeypair]);
+    console.log(`🧹 Swept ${lamports / LAMPORTS_PER_SOL} SOL from order ${orderId}: ${sig}`);
+    return sig;
+  }
+
+  const mintAddress = SPL_MINTS[coin];
+  if (!mintAddress) return null;
+
+  const { getAssociatedTokenAddress, createTransferInstruction, getOrCreateAssociatedTokenAccount } =
+    await import('@solana/spl-token');
+  const mint = new PublicKey(mintAddress);
+  const amount = await getSplBalance(depositKeypair.publicKey.toBase58(), mintAddress);
+  if (amount <= 0n) return null;
+
+  const sourceAta = await getAssociatedTokenAddress(mint, depositKeypair.publicKey);
+  // Treasury pays for its own ATA creation if this is the first sweep of this mint.
+  const treasuryAta = await getOrCreateAssociatedTokenAccount(
+    connection,
+    treasuryKeypair,
+    mint,
+    treasuryKeypair.publicKey,
+  );
+
+  const tx = new Transaction().add(
+    createTransferInstruction(sourceAta, treasuryAta.address, depositKeypair.publicKey, amount),
+  );
+  tx.feePayer = treasuryKeypair.publicKey;
+  const sig = await sendAndConfirmTransaction(connection, tx, [treasuryKeypair, depositKeypair]);
+  console.log(`🧹 Swept ${amount} raw ${coin} from order ${orderId}: ${sig}`);
+  return sig;
 }

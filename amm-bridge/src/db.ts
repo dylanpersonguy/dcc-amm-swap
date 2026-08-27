@@ -25,6 +25,7 @@ export interface DepositOrder {
   status: OrderStatus;
   solTxId: string | null;
   dccTxId: string | null;
+  sweepTxId: string | null;
   expiresAt: number;
   createdAt: number;
   updatedAt: number;
@@ -63,9 +64,14 @@ export function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_orders_status ON deposit_orders(status);
     CREATE INDEX IF NOT EXISTS idx_orders_address ON deposit_orders(deposit_address);
   `);
+
+  const columns = db.prepare(`PRAGMA table_info(deposit_orders)`).all() as Array<{ name: string }>;
+  if (!columns.some((c) => c.name === 'sweep_tx_id')) {
+    db.exec(`ALTER TABLE deposit_orders ADD COLUMN sweep_tx_id TEXT`);
+  }
 }
 
-export function createOrder(order: Omit<DepositOrder, 'createdAt' | 'updatedAt' | 'solTxId' | 'dccTxId'>): DepositOrder {
+export function createOrder(order: Omit<DepositOrder, 'createdAt' | 'updatedAt' | 'solTxId' | 'dccTxId' | 'sweepTxId'>): DepositOrder {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
     `INSERT INTO deposit_orders (id, user_id, coin, deposit_address, deposit_amount, dcc_amount, dcc_recipient, amount_usd, network_fee, bridge_fee, status, expires_at, created_at, updated_at)
@@ -76,7 +82,7 @@ export function createOrder(order: Omit<DepositOrder, 'createdAt' | 'updatedAt' 
     order.amountUsd, order.networkFee, order.bridgeFee,
     order.status, order.expiresAt, now, now,
   );
-  return { ...order, solTxId: null, dccTxId: null, createdAt: now, updatedAt: now };
+  return { ...order, solTxId: null, dccTxId: null, sweepTxId: null, createdAt: now, updatedAt: now };
 }
 
 export function getOrder(id: string): DepositOrder | null {
@@ -120,6 +126,19 @@ export function getPendingOrders(): DepositOrder[] {
     `SELECT * FROM deposit_orders WHERE status IN ('pending', 'confirming') ORDER BY created_at ASC`
   ).all() as any[];
   return rows.map(mapRow);
+}
+
+/** Completed orders whose deposit hasn't been swept to treasury yet — retry candidates. */
+export function getUnsweptCompletedOrders(): DepositOrder[] {
+  const rows = db.prepare(
+    `SELECT * FROM deposit_orders WHERE status = 'completed' AND sweep_tx_id IS NULL ORDER BY created_at ASC`
+  ).all() as any[];
+  return rows.map(mapRow);
+}
+
+export function markSwept(id: string, sweepTxId: string): void {
+  db.prepare(`UPDATE deposit_orders SET sweep_tx_id = ?, updated_at = ? WHERE id = ?`)
+    .run(sweepTxId, Math.floor(Date.now() / 1000), id);
 }
 
 export function getExpiredOrders(): DepositOrder[] {
@@ -167,6 +186,7 @@ function mapRow(r: any): DepositOrder {
     status: r.status,
     solTxId: r.sol_tx_id,
     dccTxId: r.dcc_tx_id,
+    sweepTxId: r.sweep_tx_id,
     expiresAt: r.expires_at,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
