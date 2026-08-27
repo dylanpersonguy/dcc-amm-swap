@@ -9,7 +9,8 @@
     "amm-sdk",
     "amm-indexer",
     "amm-web",
-    "amm-bot"
+    "amm-bot",
+    "amm-monitor"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
