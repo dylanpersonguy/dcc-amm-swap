@@ -154,7 +154,7 @@ export function ToastContainer() {
           {toast.txId && (
             <a
               className="toast-link"
-              href={`https://explorer.decentralchain.io/tx/${toast.txId}`}
+              href={`${explorerUrl}/tx/${toast.txId}`}
               target="_blank"
               rel="noopener noreferrer"
             >

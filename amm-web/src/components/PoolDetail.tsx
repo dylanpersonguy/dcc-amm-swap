@@ -7,16 +7,14 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useSdk } from '../context/SdkContext';
 import { useWallet } from '../context/WalletContext';
-import { useTokens, getTokenColor } from '../hooks/useTokens';
-import { getTokenLogo } from '../hooks/useTokens';
+import { useTokens, getTokenColor, getTokenLogo } from '../hooks/useTokens';
 import { usePoolStats } from '../hooks/usePoolStats';
 import { useToasts } from '../context/ToastContext';
 import { useTxTracker } from '../context/TransactionTracker';
 import { Breadcrumbs } from './Breadcrumbs';
 import { PriceChart } from './PriceChart';
 import { config } from '../config';
-import { estimateRemoveLiquidity, estimateAddLiquidity, getSpotPrice } from '@dcc-amm/sdk';
-import type { PoolStateV2 } from '@dcc-amm/sdk';
+import { estimateRemoveLiquidity, estimateAddLiquidity, getSpotPrice, type PoolStateV2 } from '@dcc-amm/sdk';
 
 export function PoolDetail() {
   const { poolId: routePoolId } = useParams<{ poolId: string }>();

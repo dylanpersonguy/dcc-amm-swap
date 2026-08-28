@@ -4,8 +4,7 @@
  */
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import type { TokenInfo } from '../hooks/useTokens';
-import { getTokenColor, getTokenLogo } from '../hooks/useTokens';
+import { getTokenColor, getTokenLogo, type TokenInfo } from '../hooks/useTokens';
 import { TokenInfoPopup } from './TokenInfoPopup';
 
 interface TokenModalProps {

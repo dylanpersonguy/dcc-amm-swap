@@ -6,7 +6,7 @@ import React from 'react';
 import { useOffline } from '../hooks/useOffline';
 
 export function OfflineBanner() {
-  const { isOffline, nodeDown, showBanner } = useOffline();
+  const { isOffline, showBanner } = useOffline();
 
   if (!showBanner) return null;
 

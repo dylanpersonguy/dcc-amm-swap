@@ -6,13 +6,11 @@
 import React, { useState, useCallback } from 'react';
 import { useWallet } from '../context/WalletContext';
 import { useSdk } from '../context/SdkContext';
-import { useTokens, getTokenColor } from '../hooks/useTokens';
-import { getTokenLogo } from '../hooks/useTokens';
+import { useTokens, getTokenColor, getTokenLogo } from '../hooks/useTokens';
 import { useBalances } from '../hooks/useBalances';
 import { useToasts } from '../context/ToastContext';
 import { useTxTracker } from '../context/TransactionTracker';
 import { TokenModal } from './TokenModal';
-import { config } from '../config';
 
 type LiquidityMode = 'add' | 'remove' | 'create';
 
@@ -33,8 +31,10 @@ export function LiquidityPanel() {
   const [feeBps, setFeeBps] = useState('35');
   const [slippageBps, setSlippageBps] = useState('50');
   const [txStatus, setTxStatus] = useState<'idle' | 'pending' | 'success' | 'error'>('idle');
-  const [txId, setTxId] = useState<string | null>(null);
-  const [txError, setTxError] = useState<string | null>(null);
+  // Both surfaced to the user via the toast system, not read locally —
+  // still tracked here in case a future inline status UI wants them.
+  const [, setTxId] = useState<string | null>(null);
+  const [, setTxError] = useState<string | null>(null);
 
   const [showTokenAModal, setShowTokenAModal] = useState(false);
   const [showTokenBModal, setShowTokenBModal] = useState(false);

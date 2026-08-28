@@ -6,8 +6,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSdk } from '../context/SdkContext';
-import { getTokenColor, useTokens } from '../hooks/useTokens';
-import { getTokenLogo } from '../hooks/useTokens';
+import { getTokenColor, useTokens, getTokenLogo } from '../hooks/useTokens';
 import { usePoolStats } from '../hooks/usePoolStats';
 import { useFavorites } from '../hooks/useFavorites';
 import { SkeletonPoolGrid } from './SkeletonLoaders';

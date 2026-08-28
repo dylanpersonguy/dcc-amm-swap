@@ -143,12 +143,6 @@ export function ExplorePage() {
     return t?.name || s.slice(0, 8) + '\u2026';
   };
 
-  const getDecimals = (assetId: string | null): number => {
-    if (!assetId || assetId === 'DCC') return 8;
-    const t = tokens.find((tk) => tk.assetId === assetId);
-    return t?.decimals ?? 8;
-  };
-
   // Fetch transactions from indexer
   useEffect(() => {
     if (activeTab !== 'transactions') return;

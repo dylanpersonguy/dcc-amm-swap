@@ -8,11 +8,9 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useWallet } from '../context/WalletContext';
 import { useSdk } from '../context/SdkContext';
-import { useTokens } from '../hooks/useTokens';
-import { getTokenColor } from '../hooks/useTokens';
-import { getTokenLogo } from '../hooks/useTokens';
+import { useTokens, getTokenColor, getTokenLogo } from '../hooks/useTokens';
 import { useBalances } from '../hooks/useBalances';
-import { useSwapHistory, SwapHistoryEntry } from '../hooks/useSwapHistory';
+import { useSwapHistory } from '../hooks/useSwapHistory';
 import { useToasts } from '../context/ToastContext';
 import { useTxTracker } from '../context/TransactionTracker';
 import { TokenModal } from './TokenModal';
@@ -42,8 +40,10 @@ export function SwapPanel() {
   const [quoteTimestamp, setQuoteTimestamp] = useState<number | null>(null);
   const [quoteStaleness, setQuoteStaleness] = useState('');
   const [txStatus, setTxStatus] = useState<'idle' | 'pending' | 'success' | 'error'>('idle');
-  const [txId, setTxId] = useState<string | null>(null);
-  const [txError, setTxError] = useState<string | null>(null);
+  // Both surfaced to the user via the toast system, not read locally —
+  // still tracked here in case a future inline status UI wants them.
+  const [, setTxId] = useState<string | null>(null);
+  const [, setTxError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
 
   const [showInputModal, setShowInputModal] = useState(false);

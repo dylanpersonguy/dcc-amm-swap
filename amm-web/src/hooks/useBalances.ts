@@ -20,6 +20,12 @@ export function useBalances() {
       return;
     }
 
+    // Guard against a stale in-flight refresh (e.g. the user disconnects or
+    // switches wallets mid-fetch) overwriting a newer one's result — the two
+    // fetches below aren't otherwise ordered relative to a later refresh()
+    // call for a different address.
+    const myToken = ++refreshToken.current;
+
     try {
       setLoading(true);
       const map = new Map<string, bigint>();
@@ -42,11 +48,15 @@ export function useBalances() {
         }
       }
 
-      setBalances(map);
+      if (refreshToken.current === myToken) {
+        setBalances(map);
+      }
     } catch (err) {
       console.error('[useBalances] Failed to fetch balances:', err);
     } finally {
-      setLoading(false);
+      if (refreshToken.current === myToken) {
+        setLoading(false);
+      }
     }
   }, [address, isConnected]);
 
