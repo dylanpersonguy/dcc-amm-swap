@@ -144,37 +144,55 @@ async function main() {
   });
 
   // ── 3. setProtocolFee round-trip ────────────────────────────────────
+  // Only round-trips if a real prior value exists. Neither setter's target
+  // key can be un-set again through any callable the contract exposes (no
+  // DeleteEntry path) — so if it was never configured before (state read
+  // returns null), there is no safe value to "restore" to. Attempting to
+  // pass null as the arg also just produces an invalid tx, not a revert.
   const originalFeePct = await readState(coreAddr, 'config:protocolFeePct');
-  const testFeePct = originalFeePct === 1234 ? 4321 : 1234;
-  await step(`setProtocolFee(${testFeePct}) (was ${originalFeePct})`, async () => {
-    const result = await invokeFunc(coreSeed, coreAddr, 'setProtocolFee', [{ type: 'integer', value: testFeePct }]);
-    assert(result.ok, `setProtocolFee() failed: ${result.error}`);
-    const now = await readState(coreAddr, 'config:protocolFeePct');
-    assert(now === testFeePct, `Expected ${testFeePct}, got ${now}`);
-  });
-  await step(`setProtocolFee(${originalFeePct}) restores original`, async () => {
-    const result = await invokeFunc(coreSeed, coreAddr, 'setProtocolFee', [{ type: 'integer', value: originalFeePct }]);
-    assert(result.ok, `setProtocolFee() restore failed: ${result.error}`);
-    const now = await readState(coreAddr, 'config:protocolFeePct');
-    assert(now === originalFeePct, `Expected restore to ${originalFeePct}, got ${now}`);
-  });
+  if (originalFeePct === null) {
+    console.log('  [SKIP] config:protocolFeePct was never set — no safe value to round-trip to.');
+    console.log('         (Confirmed separately that getProtocolFeePct() is never read by any');
+    console.log('          swap/liquidity logic, so this is dead config, not a fund-safety gap —');
+    console.log('          but it also means there is nothing here worth live-testing right now.)');
+  } else {
+    const testFeePct = originalFeePct === 1234 ? 4321 : 1234;
+    await step(`setProtocolFee(${testFeePct}) (was ${originalFeePct})`, async () => {
+      const result = await invokeFunc(coreSeed, coreAddr, 'setProtocolFee', [{ type: 'integer', value: testFeePct }]);
+      assert(result.ok, `setProtocolFee() failed: ${result.error}`);
+      const now = await readState(coreAddr, 'config:protocolFeePct');
+      assert(now === testFeePct, `Expected ${testFeePct}, got ${now}`);
+    });
+    await step(`setProtocolFee(${originalFeePct}) restores original`, async () => {
+      const result = await invokeFunc(coreSeed, coreAddr, 'setProtocolFee', [{ type: 'integer', value: originalFeePct }]);
+      assert(result.ok, `setProtocolFee() restore failed: ${result.error}`);
+      const now = await readState(coreAddr, 'config:protocolFeePct');
+      assert(now === originalFeePct, `Expected restore to ${originalFeePct}, got ${now}`);
+    });
+  }
 
   // ── 4. setTreasury round-trip ───────────────────────────────────────
   const originalTreasury = await readState(coreAddr, 'config:treasury');
-  const testTreasurySeed = libs.crypto.randomSeed(15);
-  const testTreasuryAddr = libs.crypto.address(testTreasurySeed, chainId);
-  await step(`setTreasury(${testTreasuryAddr}) (was ${originalTreasury})`, async () => {
-    const result = await invokeFunc(coreSeed, coreAddr, 'setTreasury', [{ type: 'string', value: testTreasuryAddr }]);
-    assert(result.ok, `setTreasury() failed: ${result.error}`);
-    const now = await readState(coreAddr, 'config:treasury');
-    assert(now === testTreasuryAddr, `Expected ${testTreasuryAddr}, got ${now}`);
-  });
-  await step(`setTreasury(${originalTreasury}) restores original`, async () => {
-    const result = await invokeFunc(coreSeed, coreAddr, 'setTreasury', [{ type: 'string', value: originalTreasury }]);
-    assert(result.ok, `setTreasury() restore failed: ${result.error}`);
-    const now = await readState(coreAddr, 'config:treasury');
-    assert(now === originalTreasury, `Expected restore to ${originalTreasury}, got ${now}`);
-  });
+  if (originalTreasury === null) {
+    console.log('  [SKIP] config:treasury was never set — no safe value to round-trip to.');
+    console.log('         (Same reasoning as protocolFeePct above — also confirmed getTreasury()');
+    console.log('          is never read anywhere, so this is dead config, not a fund risk.)');
+  } else {
+    const testTreasurySeed = libs.crypto.randomSeed(15);
+    const testTreasuryAddr = libs.crypto.address(testTreasurySeed, chainId);
+    await step(`setTreasury(${testTreasuryAddr}) (was ${originalTreasury})`, async () => {
+      const result = await invokeFunc(coreSeed, coreAddr, 'setTreasury', [{ type: 'string', value: testTreasuryAddr }]);
+      assert(result.ok, `setTreasury() failed: ${result.error}`);
+      const now = await readState(coreAddr, 'config:treasury');
+      assert(now === testTreasuryAddr, `Expected ${testTreasuryAddr}, got ${now}`);
+    });
+    await step(`setTreasury(${originalTreasury}) restores original`, async () => {
+      const result = await invokeFunc(coreSeed, coreAddr, 'setTreasury', [{ type: 'string', value: originalTreasury }]);
+      assert(result.ok, `setTreasury() restore failed: ${result.error}`);
+      const now = await readState(coreAddr, 'config:treasury');
+      assert(now === originalTreasury, `Expected restore to ${originalTreasury}, got ${now}`);
+    });
+  }
 
   // ── 5. setRouter verify-only (same value, not a real change) ───────
   const currentRouter = await readState(coreAddr, 'router');
