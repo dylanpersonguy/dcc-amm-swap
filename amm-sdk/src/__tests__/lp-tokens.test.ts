@@ -803,7 +803,7 @@ describe('Contract Logic — LP Token Lifecycle', () => {
   describe('Edge Cases', () => {
     it('user who bought LP tokens on market can remove liquidity without negative internal balance', () => {
       const PID = 'p:DCC:EDGE:30';
-      let state: State = {
+      const state: State = {
         [`pool:exists:${PID}`]: 1,
         [`pool:r0:${PID}`]: 1_000_000,
         [`pool:r1:${PID}`]: 2_000_000,

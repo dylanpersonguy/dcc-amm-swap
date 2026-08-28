@@ -11,11 +11,8 @@ import {
   getAddLiquidity,
   getRemoveLiquidity,
   getMinAmountOut,
-  getPoolId,
   normalizeAssetId,
-  canonicalSort,
   quote as rawQuote,
-  DCC_ASSET_ID,
 } from '@dcc-amm/core';
 
 import { PoolStateV2, SwapQuoteV2 } from './types';

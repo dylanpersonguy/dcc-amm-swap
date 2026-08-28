@@ -9,7 +9,6 @@ import { NodeClient } from './node-client';
 import { TxBuilder } from './tx-builder';
 import {
   computeSwapQuote,
-  computeProportionalQuote,
   getSpotPrice,
   estimateInitialLp,
   estimateAddLiquidity,
@@ -24,10 +23,7 @@ import {
 } from './types';
 import {
   getPoolId,
-  getMinAmountOut,
   normalizeAssetId,
-  DCC_ASSET_ID,
-  DEFAULT_FEE_BPS,
 } from '@dcc-amm/core';
 
 export class AmmSdk {
