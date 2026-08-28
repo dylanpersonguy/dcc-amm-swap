@@ -143,7 +143,7 @@ function normalizeAsset(id: string | undefined): string | null {
   return id;
 }
 
-function swaggerHtml(port: number): string {
+function swaggerHtml(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -201,7 +201,7 @@ export function startServer(
     try {
       // ── Docs ───────────────────────────────────────────────────
       if (segments[0] === 'docs' && !segments[1]) {
-        return html(res, swaggerHtml(port));
+        return html(res, swaggerHtml());
       }
       if (path === '/docs.json') {
         return json(res, getSwaggerSpec(port));

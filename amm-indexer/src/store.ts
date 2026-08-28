@@ -34,7 +34,7 @@ export class IndexerStore {
   }
 
   getSwaps(poolKey?: string, limit: number = 50): SwapEvent[] {
-    let filtered = poolKey
+    const filtered = poolKey
       ? this.swaps.filter((s) => s.poolKey === poolKey)
       : this.swaps;
     return filtered.slice(-limit).reverse();
@@ -54,7 +54,7 @@ export class IndexerStore {
   }
 
   getLiquidityEvents(poolKey?: string, limit: number = 50): LiquidityEvent[] {
-    let filtered = poolKey
+    const filtered = poolKey
       ? this.liquidityEvents.filter((e) => e.poolKey === poolKey)
       : this.liquidityEvents;
     return filtered.slice(-limit).reverse();
