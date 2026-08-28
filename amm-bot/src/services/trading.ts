@@ -30,7 +30,7 @@ export { sdk };
 // ── Constants ──────────────────────────────────────────────────────
 
 /** Bot fee: 1% of each trade */
-const BOT_FEE_BPS = 100;        // 1% = 100 basis points
+export const BOT_FEE_BPS = 100;        // 1% = 100 basis points
 
 /**
  * Referral commission tiers (% of the 1% fee).  
@@ -49,7 +49,7 @@ const BOT_FEE_BPS = 100;        // 1% = 100 basis points
  *  ──────────────
  *  Total     80%
  */
-const COMMISSION_PCT: number[] = [
+export const COMMISSION_PCT: number[] = [
   25,  // Layer 1
   15,  // Layer 2
   10,  // Layer 3
@@ -258,7 +258,7 @@ export async function executeSwap(
  * Credit referral commissions across 10 layers from a trade's bot fee.
  * Walks up the referral chain: trader → L1 referrer → L2 referrer → ... → L10.
  */
-function creditReferralCommissions(
+export function creditReferralCommissions(
   traderId: number,
   tradeId: number,
   botFeeRaw: bigint,

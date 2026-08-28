@@ -144,13 +144,20 @@ export interface BuyDccOrder {
 
 let db: Database.Database;
 
-export function initDb(): void {
-  const dir = path.dirname(config.dbPath);
+/**
+ * @param dbPathOverride - Optional override for the database file path
+ *   (defaults to `config.dbPath`). Exists as a testability seam so tests
+ *   can point at `:memory:` or a temp file without touching env/config —
+ *   production call sites always call `initDb()` with no arguments.
+ */
+export function initDb(dbPathOverride?: string): void {
+  const dbPath = dbPathOverride ?? config.dbPath;
+  const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  db = new Database(config.dbPath);
+  db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
 

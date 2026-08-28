@@ -44,6 +44,24 @@ export function clearSwapSession(userId: number) {
 
 export type { SwapSession };
 
+/**
+ * Resolve which decimals to use for amount parsing: DCC (8) for buys,
+ * the token's own decimals for sells (defaulting to 8 if unknown).
+ */
+export function resolveAmountDecimals(direction: 'buy' | 'sell', tokenDecimals?: number): number {
+  return direction === 'sell' ? (tokenDecimals ?? 8) : 8;
+}
+
+/**
+ * Parse a user-entered amount string into raw integer units via the SDK's
+ * string-based toRawAmount — precise, unlike the old
+ * `BigInt(Math.round(amount * 10 ** decimals))` approach it replaced, which
+ * could drift for non-terminating floating-point amounts.
+ */
+export function parseAmountToRaw(input: string, decimals: number): bigint {
+  return toRawAmount(input, decimals);
+}
+
 export function registerSwapHandlers(bot: Bot) {
   /* ── Menu ──────────────────────────────────────── */
 
@@ -153,8 +171,8 @@ export function registerSwapHandlers(bot: Bot) {
     if (isNaN(amount) || amount <= 0) return;
 
     // For buys, amount is in DCC (8 decimals). For sells, amount is in the token's units.
-    const decimals = session.direction === 'sell' ? (session.tokenDecimals ?? 8) : 8;
-    session.amountRaw = toRawAmount(rawVal, decimals);
+    const decimals = resolveAmountDecimals(session.direction, session.tokenDecimals);
+    session.amountRaw = parseAmountToRaw(rawVal, decimals);
     session.amountDisplay = amount.toString();
     session.step = 'preview';
 
@@ -250,8 +268,8 @@ export function registerSwapHandlers(bot: Bot) {
       return;
     }
 
-    const decimals = session.direction === 'sell' ? (session.tokenDecimals ?? 8) : 8;
-    session.amountRaw = toRawAmount(input, decimals);
+    const decimals = resolveAmountDecimals(session.direction, session.tokenDecimals);
+    session.amountRaw = parseAmountToRaw(input, decimals);
     session.amountDisplay = amount.toString();
     session.step = 'preview';
 

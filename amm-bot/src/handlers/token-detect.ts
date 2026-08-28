@@ -40,6 +40,32 @@ interface TokenTradeState {
 }
 const tradeState = new Map<number, TokenTradeState>();
 
+/**
+ * Convert a DCC-denominated sell amount (raw, 8 decimals) into the target
+ * token's raw units using the live pool reserve ratio.
+ *
+ * Presets/custom entry are always DCC-denominated ("sell ~5 DCC worth of
+ * this token"), so `dccAmountRaw` must NOT be passed through as literal
+ * token raw units directly (the old, buggy Trojan-style behavior) — it has
+ * to be converted via `amountRaw = (dccRaw * tokenReserve) / dccReserve`,
+ * which only coincidentally equals the passthrough value when the pool's
+ * DCC and token reserves — and decimals — happen to match 1:1.
+ */
+export function computeSellAmountRaw(
+  dccAmountRaw: bigint,
+  assetId: string,
+  pool: Pick<trading.PoolInfo, 'token0' | 'reserve0' | 'reserve1'>,
+): bigint {
+  const tokenSide = pool.token0 === assetId ? 'token0' : 'token1';
+  const tokenReserve = tokenSide === 'token0' ? pool.reserve0 : pool.reserve1;
+  const dccReserve = tokenSide === 'token0' ? pool.reserve1 : pool.reserve0;
+  const amountRaw = (dccAmountRaw * tokenReserve) / dccReserve;
+  if (amountRaw <= 0n) {
+    throw new Error('Amount too small to execute — try a larger amount.');
+  }
+  return amountRaw;
+}
+
 export function registerTokenDetectHandlers(bot: Bot) {
 
   /* ── Text: custom trade amount ─────────────────── */
@@ -483,13 +509,7 @@ async function executeTokenSwap(
       if (!pool) {
         throw new Error('No liquidity pool found for this token.');
       }
-      const tokenSide = pool.token0 === assetId ? 'token0' : 'token1';
-      const tokenReserve = tokenSide === 'token0' ? pool.reserve0 : pool.reserve1;
-      const dccReserve = tokenSide === 'token0' ? pool.reserve1 : pool.reserve0;
-      amountRaw = (dccRaw * tokenReserve) / dccReserve;
-      if (amountRaw <= 0n) {
-        throw new Error('Amount too small to execute — try a larger amount.');
-      }
+      amountRaw = computeSellAmountRaw(dccRaw, assetId, pool);
     }
 
     const assetIn = direction === 'buy' ? null : assetId;
