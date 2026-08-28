@@ -76,7 +76,6 @@ export async function getSolBalance(address: string): Promise<number> {
  */
 export async function getSplBalance(address: string, mintAddress: string): Promise<bigint> {
   try {
-    const { TOKEN_PROGRAM_ID } = await import('@solana/spl-token');
     const pubkey = new PublicKey(address);
     const mint = new PublicKey(mintAddress);
 

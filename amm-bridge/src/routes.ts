@@ -53,7 +53,7 @@ router.get('/health', async (_req: Request, res: Response) => {
       dcc: true,
       timestamp: new Date().toISOString(),
     });
-  } catch (err: any) {
+  } catch {
     res.json({
       status: 'degraded',
       solana: false,
