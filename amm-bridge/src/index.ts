@@ -88,6 +88,19 @@ async function start(): Promise<void> {
   }, SWEEP_RETRY_INTERVAL);
   console.log(`  ✅ Sweep retry running (every ${SWEEP_RETRY_INTERVAL / 60_000}m)`);
 
+  // Periodic on-volume backup — guards against app-level corruption or a
+  // bad migration, not a substitute for off-volume disaster recovery.
+  const BACKUP_INTERVAL = 6 * 60 * 60_000;
+  setInterval(async () => {
+    try {
+      const dest = await db.backupDb();
+      console.log(`  💾 DB backup written: ${dest}`);
+    } catch (err) {
+      console.error('Backup error:', err);
+    }
+  }, BACKUP_INTERVAL);
+  console.log(`  ✅ DB backup running (every ${BACKUP_INTERVAL / 3_600_000}h)`);
+
   // Start Express server
   app.listen(config.port, () => {
     console.log(`\n🚀 Bridge API listening on http://localhost:${config.port}`);

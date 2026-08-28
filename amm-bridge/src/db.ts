@@ -71,6 +71,33 @@ export function initDb(): void {
   }
 }
 
+// ── Backup ─────────────────────────────────────────────────────────
+
+const BACKUP_DIR = path.join(path.dirname(config.dbPath), 'backups');
+const MAX_BACKUPS = 14;
+
+/**
+ * Online-copy the live database to a timestamped file on the same volume
+ * and prune older backups beyond MAX_BACKUPS. Guards against app-level
+ * corruption or a bad migration — not a substitute for off-volume/off-region
+ * disaster recovery.
+ */
+export async function backupDb(): Promise<string> {
+  if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const dest = path.join(BACKUP_DIR, `bridge-${stamp}.db`);
+  await db.backup(dest);
+
+  const files = fs.readdirSync(BACKUP_DIR).filter((f) => f.endsWith('.db')).sort();
+  const excess = files.length - MAX_BACKUPS;
+  for (const f of files.slice(0, Math.max(0, excess))) {
+    fs.unlinkSync(path.join(BACKUP_DIR, f));
+  }
+
+  return dest;
+}
+
 export function createOrder(order: Omit<DepositOrder, 'createdAt' | 'updatedAt' | 'solTxId' | 'dccTxId' | 'sweepTxId'>): DepositOrder {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(

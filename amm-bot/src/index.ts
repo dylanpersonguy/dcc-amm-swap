@@ -14,7 +14,7 @@ dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
 import { Bot, GrammyError, HttpError } from 'grammy';
 import { config } from './config';
-import { initDb } from './db';
+import { initDb, backupDb } from './db';
 
 import { registerHomeHandlers } from './handlers/home';
 import { registerWalletHandlers } from './handlers/wallet';
@@ -41,6 +41,18 @@ if (!config.botToken) {
 console.log('📦 Initializing database...');
 initDb();
 console.log('✅ Database ready');
+
+// Periodic on-volume backup — guards against app-level corruption or a bad
+// migration, not a substitute for off-volume disaster recovery.
+const BACKUP_INTERVAL = 6 * 60 * 60_000;
+setInterval(async () => {
+  try {
+    const dest = await backupDb();
+    console.log(`💾 DB backup written: ${dest}`);
+  } catch (err) {
+    console.error('Backup error:', err);
+  }
+}, BACKUP_INTERVAL);
 
 // ── Create bot instance ────────────────────────────────────────────
 

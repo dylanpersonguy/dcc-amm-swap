@@ -247,6 +247,33 @@ export function initDb(): void {
   } catch { /* column already exists */ }
 }
 
+// ── Backup ─────────────────────────────────────────────────────────
+
+const BACKUP_DIR = path.join(path.dirname(config.dbPath), 'backups');
+const MAX_BACKUPS = 14;
+
+/**
+ * Online-copy the live database to a timestamped file on the same volume
+ * and prune older backups beyond MAX_BACKUPS. Guards against app-level
+ * corruption or a bad migration — not a substitute for off-volume/off-region
+ * disaster recovery.
+ */
+export async function backupDb(): Promise<string> {
+  if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const dest = path.join(BACKUP_DIR, `bot-${stamp}.db`);
+  await db.backup(dest);
+
+  const files = fs.readdirSync(BACKUP_DIR).filter((f) => f.endsWith('.db')).sort();
+  const excess = files.length - MAX_BACKUPS;
+  for (const f of files.slice(0, Math.max(0, excess))) {
+    fs.unlinkSync(path.join(BACKUP_DIR, f));
+  }
+
+  return dest;
+}
+
 // ── Wallet CRUD ────────────────────────────────────────────────────
 
 export function createWallet(
