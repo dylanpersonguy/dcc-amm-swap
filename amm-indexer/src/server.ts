@@ -179,7 +179,6 @@ export function startServer(
 
   const server = http.createServer(async (req, res) => {
     const { path, query } = parseUrl(req.url || '/');
-    const segments = path.split('/').filter(Boolean);
 
     // CORS preflight
     if (req.method === 'OPTIONS') {
@@ -199,6 +198,14 @@ export function startServer(
     }
 
     try {
+      // Decode each segment individually (not the whole path pre-split) so
+      // a route param containing reserved chars — e.g. a poolKey like
+      // "p:DCC:<assetId>:35", which the frontend passes through
+      // encodeURIComponent — actually matches the literal stored key
+      // instead of 404ing on the still-percent-encoded string. Inside the
+      // try/catch since a malformed percent-sequence throws a URIError.
+      const segments = path.split('/').filter(Boolean).map(decodeURIComponent);
+
       // ── Docs ───────────────────────────────────────────────────
       if (segments[0] === 'docs' && !segments[1]) {
         return html(res, swaggerHtml());

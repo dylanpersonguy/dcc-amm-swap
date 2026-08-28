@@ -230,6 +230,41 @@ describe('server routes', () => {
     expect(statsRes.body.poolKey).toBe('DCC_TOKEN');
   });
 
+  it('GET /pools/:key resolves a real-shaped poolKey ("p:DCC:<assetId>:35") the way the frontend actually requests it — via encodeURIComponent', async () => {
+    const realPoolKey = 'p:DCC:J66Yxxphpx469mzvFSbMQUc3A3EijdSLcRtJEAoAUKjK:35';
+    store.updatePool({
+      poolKey: realPoolKey,
+      assetA: 'DCC',
+      assetB: 'J66Yxxphpx469mzvFSbMQUc3A3EijdSLcRtJEAoAUKjK',
+      reserveA: '649985169',
+      reserveB: '38493310397',
+      lpSupply: '4999730190',
+      feeBps: 35,
+      status: 'active',
+      priceAtoB: 59.22,
+      priceBtoA: 0.0169,
+      tvlA: '649985169',
+      tvlB: '38493310397',
+      timestamp: Date.now(),
+      blockHeight: 1,
+    });
+
+    // amm-web's usePoolStats.ts does exactly this: encodeURIComponent(poolKey).
+    // The colons in a real poolKey become %3A — a naive path.split('/') without
+    // per-segment decoding would look up the still-encoded string and 404.
+    const res = await req('GET', `/pools/${encodeURIComponent(realPoolKey)}`);
+    expect(res.status).toBe(200);
+    expect(res.body.poolKey).toBe(realPoolKey);
+
+    const statsRes = await req('GET', `/pools/${encodeURIComponent(realPoolKey)}/stats`);
+    expect(statsRes.status).toBe(200);
+    expect(statsRes.body.poolKey).toBe(realPoolKey);
+
+    const priceRes = await req('GET', `/pools/${encodeURIComponent(realPoolKey)}/price`);
+    expect(priceRes.status).toBe(200);
+    expect(priceRes.body.poolKey).toBe(realPoolKey);
+  });
+
   it('GET /swaps returns [] with nothing indexed', async () => {
     const res = await req('GET', '/swaps');
     expect(res.status).toBe(200);
