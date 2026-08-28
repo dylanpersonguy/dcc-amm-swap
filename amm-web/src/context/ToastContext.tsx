@@ -33,7 +33,7 @@ export function useToasts() {
 }
 
 /** Translate RIDE error codes to human-readable messages */
-function translateError(msg: string): string {
+export function translateError(msg: string): string {
   const mappings: [RegExp, string][] = [
     [/slippage|Slippage check failed/i, 'Slippage tolerance exceeded — try increasing slippage or reducing amount'],
     [/deadline|Deadline passed/i, 'Transaction deadline expired — please try again'],
