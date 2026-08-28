@@ -160,52 +160,6 @@ async function compileRide(nodeUrl: string, source: string): Promise<string> {
   return base64Script; // Keep prefix for SetScript tx
 }
 
-// ── Broadcast Transaction ─────────────────────────────────────────────
-
-async function broadcast(nodeUrl: string, txJson: string): Promise<any> {
-  const res = await httpRequest(
-    `${nodeUrl}/transactions/broadcast`,
-    'POST',
-    txJson,
-    'application/json'
-  );
-
-  const json = JSON.parse(res.body);
-  if (res.status !== 200 || json.error) {
-    throw new Error(
-      `Broadcast failed (HTTP ${res.status}): ${json.message || res.body}`
-    );
-  }
-
-  return json;
-}
-
-// ── Wait for Transaction Confirmation ─────────────────────────────────
-
-async function waitForTx(
-  nodeUrl: string,
-  txId: string,
-  timeoutMs = 60000,
-  intervalMs = 3000
-): Promise<any> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const res = await httpRequest(
-        `${nodeUrl}/transactions/info/${txId}`,
-        'GET'
-      );
-      if (res.status === 200) {
-        return JSON.parse(res.body);
-      }
-    } catch {
-      // ignore, retry
-    }
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-  throw new Error(`Timeout waiting for tx ${txId}`);
-}
-
 // ── Get Address from Seed ─────────────────────────────────────────────
 // NOTE: This is a placeholder. In production, use @decentralchain/ts-lib-crypto
 // or @waves/ts-lib-crypto for proper address derivation.

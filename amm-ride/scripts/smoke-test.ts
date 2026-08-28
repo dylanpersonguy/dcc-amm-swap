@@ -293,10 +293,13 @@ async function runAllTests(config: TestConfig) {
       await readIntState(nodeUrl, dAppAddress, `lp:${pid}:LOCKED`)
     );
 
-    console.log(`      r0=${r0} r1=${r1} supply=${supply} locked=${locked}`);
+    console.log(`      r0=${r0} r1=${r1} supply=${supply} locked=${locked} sqrt(r0*r1)=${sqrtK}`);
     assert(locked === 1000n, `Expected locked=1000, got ${locked}`);
-    // Total supply should be approximately sqrt(r0*r1)
-    // (it may not be exact if subsequent deposits/withdrawals occurred)
+    // Total supply should be approximately sqrt(r0*r1) — only exact right
+    // after the first deposit; subsequent deposits/withdrawals shift it.
+    if (supply !== sqrtK - 1000n) {
+      console.log(`      [INFO] supply differs from sqrt(r0*r1)-1000 (${sqrtK - 1000n}) — pool may have had later activity.`);
+    }
   });
 
   // ── Test 4: Swap math verification ──────────────────────────────
