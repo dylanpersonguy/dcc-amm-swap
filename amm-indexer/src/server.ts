@@ -69,7 +69,7 @@ function bigintReplacer(_key: string, value: unknown): unknown {
  * SyntaxError on malformed input, which the outer try/catch does turn into
  * a 500, but a null here lets callers return a clean, specific 400 instead.
  */
-function parsePositiveBigInt(value: unknown): bigint | null {
+export function parsePositiveBigInt(value: unknown): bigint | null {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string' && typeof value !== 'number') return null;
   const str = String(value);
@@ -79,7 +79,7 @@ function parsePositiveBigInt(value: unknown): bigint | null {
 }
 
 /** Fee tier must be within the contract's own enforced bounds (1-1000 bps). */
-function parseValidFeeBps(value: unknown, fallback = 35): number | null {
+export function parseValidFeeBps(value: unknown, fallback = 35): number | null {
   if (value === undefined || value === null || value === '') return fallback;
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1 || n > 1000) return null;
@@ -138,12 +138,12 @@ function parseBody(req: http.IncomingMessage): Promise<Record<string, unknown>> 
 }
 
 /** Normalize asset ID — treat "DCC" as null (native token) */
-function normalizeAsset(id: string | undefined): string | null {
+export function normalizeAsset(id: string | undefined): string | null {
   if (!id || id === 'DCC' || id === 'dcc') return null;
   return id;
 }
 
-function swaggerHtml(): string {
+export function swaggerHtml(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
