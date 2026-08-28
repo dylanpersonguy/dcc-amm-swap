@@ -3,7 +3,7 @@
  * Uses HTML parse mode for rich text. Trojan-style layout.
  */
 
-import { fromRawAmount, formatAmount } from '@dcc-amm/sdk';
+import { fromRawAmount } from '@dcc-amm/sdk';
 import { config } from '../config';
 
 // ── Number formatting ──────────────────────────────────────────────
@@ -412,7 +412,8 @@ export function tradeHistoryMessage(
     amountOut: string;
     txId: string;
     timestamp: number;
-  }>
+  }>,
+  totalCount?: number
 ): string {
   const lines: string[] = [];
 
@@ -423,6 +424,11 @@ export function tradeHistoryMessage(
     lines.push('');
     lines.push('  📦 <i>No trades yet. Start trading!</i>');
     return lines.join('\n');
+  }
+
+  if (totalCount !== undefined && totalCount > trades.length) {
+    lines.push('');
+    lines.push(`  <i>Showing ${trades.length} of ${totalCount} trades</i>`);
   }
 
   for (const t of trades) {
@@ -576,18 +582,3 @@ export function referralMessage(opts: {
   return lines.join('\n');
 }
 
-/* ── Helpers ────────────────────────────────────────────────────── */
-
-function computeConversion(poolData: {
-  dccReserve: bigint;
-  tokenReserve: bigint;
-  tokenDecimals: number;
-}): string {
-  if (poolData.dccReserve === 0n) return '0';
-  const dccFloat = Number(poolData.dccReserve) / 1e8;
-  const tokenFloat = Number(poolData.tokenReserve) / 10 ** poolData.tokenDecimals;
-  if (dccFloat === 0) return '0';
-  const rate = tokenFloat / dccFloat;
-  if (rate >= 1_000_000) return fmtCompact(BigInt(Math.round(rate * 10 ** poolData.tokenDecimals)), poolData.tokenDecimals);
-  return rate.toFixed(rate >= 1 ? 2 : 6);
-}

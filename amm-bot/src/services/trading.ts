@@ -3,7 +3,7 @@
  * Signs and broadcasts transactions using the user's stored seed.
  */
 
-import { AmmSdk, fromRawAmount, toRawAmount } from '@dcc-amm/sdk';
+import { AmmSdk, fromRawAmount } from '@dcc-amm/sdk';
 import { invokeScript, transfer, broadcast, waitForTx } from '@decentralchain/transactions';
 import { config, adminAddress } from '../config';
 import {

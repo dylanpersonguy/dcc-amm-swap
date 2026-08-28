@@ -10,7 +10,6 @@ import {
   getActiveWallet,
   getUserWallets,
   setActiveWallet,
-  deleteWallet as dbDeleteWallet,
   getWalletSeed,
   UserWallet,
 } from '../db';

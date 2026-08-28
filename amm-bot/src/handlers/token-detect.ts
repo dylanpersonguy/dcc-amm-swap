@@ -21,6 +21,7 @@
  */
 
 import { Bot, Context, InlineKeyboard } from 'grammy';
+import { toRawAmount } from '@dcc-amm/sdk';
 import * as trading from '../services/trading';
 import { getAssetInfo, getActiveWallet, getBalance } from '../services/wallet';
 import { getSettings } from '../db';
@@ -34,11 +35,33 @@ const BASE58_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 interface TokenTradeState {
   assetId: string;
   direction: 'buy' | 'sell';
-  amount?: number;  // DCC amount selected
+  amountDcc?: number;          // last DCC-equivalent amount traded/selected
+  awaitingCustomAmount?: boolean;
 }
 const tradeState = new Map<number, TokenTradeState>();
 
 export function registerTokenDetectHandlers(bot: Bot) {
+
+  /* ── Text: custom trade amount ─────────────────── */
+
+  bot.on('message:text', async (ctx, next) => {
+    const userId = ctx.from!.id;
+    const pending = tradeState.get(userId);
+    if (!pending?.awaitingCustomAmount) return next();
+
+    const input = ctx.message!.text!.trim();
+    const dccAmount = parseFloat(input);
+    if (isNaN(dccAmount) || dccAmount <= 0) {
+      await ctx.reply('❌ Invalid amount. Enter a positive number:', {
+        parse_mode: 'HTML',
+        reply_markup: kb.cancelKeyboard(),
+      });
+      return;
+    }
+
+    tradeState.set(userId, { ...pending, awaitingCustomAmount: false, amountDcc: dccAmount });
+    await executeTokenSwap(ctx, userId, pending.assetId, pending.direction, dccAmount);
+  });
 
   /* ── Text: detect pasted asset ID ──────────────── */
 
@@ -121,7 +144,11 @@ export function registerTokenDetectHandlers(bot: Bot) {
       // Custom amount entry
       await ctx.answerCallbackQuery();
       const state = tradeState.get(userId);
-      tradeState.set(userId, { assetId, direction: state?.direction || 'buy' });
+      tradeState.set(userId, {
+        assetId,
+        direction: state?.direction || 'buy',
+        awaitingCustomAmount: true,
+      });
 
       await ctx.editMessageText(
         '✏️ <b>Enter Amount</b>\n\nType the amount of DCC:',
@@ -136,6 +163,7 @@ export function registerTokenDetectHandlers(bot: Bot) {
 
     const state = tradeState.get(userId);
     const direction = state?.direction || 'buy';
+    tradeState.set(userId, { assetId, direction, amountDcc: dccAmount });
 
     // Execute the swap directly (Trojan style — immediate execution)
     await executeTokenSwap(ctx, userId, assetId, direction, dccAmount);
@@ -151,7 +179,7 @@ export function registerTokenDetectHandlers(bot: Bot) {
 
     // Default to 1 DCC if no amount was set
     const state = tradeState.get(userId);
-    const amount = state?.amount || 1;
+    const amount = state?.amountDcc || 1;
 
     await executeTokenSwap(ctx, userId, assetId, direction, amount);
   });
@@ -443,7 +471,26 @@ async function executeTokenSwap(
 
   try {
     const settings = getSettings(userId);
-    const amountRaw = BigInt(Math.round(dccAmount * 1e8));
+    const dccRaw = toRawAmount(dccAmount.toString(), 8);
+
+    // Presets/custom entry are always DCC-denominated ("sell ~5 DCC worth of
+    // this token"), so a sell needs the DCC target converted to the token's
+    // raw units via the live reserve ratio before it can be used as amountIn.
+    let amountRaw = dccRaw;
+    if (direction === 'sell') {
+      const pools = await trading.getPools().catch(() => [] as trading.PoolInfo[]);
+      const pool = pools.find((p) => p.token0 === assetId || p.token1 === assetId);
+      if (!pool) {
+        throw new Error('No liquidity pool found for this token.');
+      }
+      const tokenSide = pool.token0 === assetId ? 'token0' : 'token1';
+      const tokenReserve = tokenSide === 'token0' ? pool.reserve0 : pool.reserve1;
+      const dccReserve = tokenSide === 'token0' ? pool.reserve1 : pool.reserve0;
+      amountRaw = (dccRaw * tokenReserve) / dccReserve;
+      if (amountRaw <= 0n) {
+        throw new Error('Amount too small to execute — try a larger amount.');
+      }
+    }
 
     const assetIn = direction === 'buy' ? null : assetId;
     const assetOut = direction === 'buy' ? assetId : null;

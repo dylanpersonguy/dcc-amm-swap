@@ -17,8 +17,9 @@ export function registerHistoryHandlers(bot: Bot) {
 async function showHistory(ctx: Context) {
   const userId = ctx.from!.id;
   const trades = getTradeHistory(userId, 10);
+  const totalCount = getTradeCount(userId);
 
-  const text = fmt.tradeHistoryMessage(trades);
+  const text = fmt.tradeHistoryMessage(trades, totalCount);
   const keyboard = kb.historyKeyboard();
 
   await ctx.editMessageText(text, {

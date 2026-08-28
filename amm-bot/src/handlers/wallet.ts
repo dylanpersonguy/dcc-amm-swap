@@ -7,7 +7,6 @@ import { Bot, Context } from 'grammy';
 import {
   generateWallet,
   importWallet,
-  getBalance,
   getAllBalances,
   getActiveWallet,
   getUserWallets,

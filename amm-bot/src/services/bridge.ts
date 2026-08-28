@@ -5,8 +5,6 @@
  * Bridge API is expected at BRIDGE_API_URL (default: http://localhost:3001).
  */
 
-import { config } from '../config';
-
 const BRIDGE_URL = process.env.BRIDGE_API_URL || 'http://localhost:3001';
 
 // ── Types ──────────────────────────────────────────────────────────

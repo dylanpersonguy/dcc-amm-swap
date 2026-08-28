@@ -11,6 +11,7 @@
  */
 
 import { Bot, Context, InlineKeyboard } from 'grammy';
+import { toRawAmount } from '@dcc-amm/sdk';
 import * as trading from '../services/trading';
 import { getAssetInfo, getActiveWallet } from '../services/wallet';
 import { getSettings } from '../db';
@@ -153,7 +154,7 @@ export function registerSwapHandlers(bot: Bot) {
 
     // For buys, amount is in DCC (8 decimals). For sells, amount is in the token's units.
     const decimals = session.direction === 'sell' ? (session.tokenDecimals ?? 8) : 8;
-    session.amountRaw = BigInt(Math.round(amount * 10 ** decimals));
+    session.amountRaw = toRawAmount(rawVal, decimals);
     session.amountDisplay = amount.toString();
     session.step = 'preview';
 
@@ -250,7 +251,7 @@ export function registerSwapHandlers(bot: Bot) {
     }
 
     const decimals = session.direction === 'sell' ? (session.tokenDecimals ?? 8) : 8;
-    session.amountRaw = BigInt(Math.round(amount * 10 ** decimals));
+    session.amountRaw = toRawAmount(input, decimals);
     session.amountDisplay = amount.toString();
     session.step = 'preview';
 
