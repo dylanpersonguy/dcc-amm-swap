@@ -253,11 +253,7 @@ export function getAmountOut(
   requirePositive(amountIn, 'amountIn');
   requirePositive(reserveIn, 'reserveIn');
   requirePositive(reserveOut, 'reserveOut');
-  requireNonNegative(feeBps, 'feeBps');
-
-  if (feeBps > MAX_FEE_BPS) {
-    throw new Error(`feeBps exceeds maximum (${MAX_FEE_BPS})`);
-  }
+  requireValidFee(feeBps);
 
   const amountInWithFee = amountIn * (BPS_DENOMINATOR - feeBps);
   const numerator = amountInWithFee * reserveOut;

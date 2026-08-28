@@ -73,7 +73,7 @@ describe('sqrtProduct', () => {
     for (const [a, b] of cases) {
       const result = sqrtProduct(a, b);
       const exact = (() => {
-        let x = a * b;
+        const x = a * b;
         if (x < 2n) return x;
         let lo = 0n, hi = x;
         while (lo < hi) {
@@ -102,7 +102,7 @@ describe('sqrtProduct', () => {
     const b = 66879683308789n;
     const result = sqrtProduct(a, b);
     const exact = (() => {
-      let x = a * b;
+      const x = a * b;
       let lo = 0n, hi = x;
       while (lo < hi) {
         const mid = (lo + hi + 1n) / 2n;

@@ -216,10 +216,18 @@ describe('getAmountOut', () => {
     expect(newK >= oldK).toBe(true);
   });
 
-  it('zero fee gives larger output', () => {
+  it('minimum fee gives larger output than a normal fee', () => {
+    // 0 isn't a valid fee tier — the real contract enforces a 1 bps floor
+    // (MIN_FEE_BPS), same as getAmountOut now does via requireValidFee.
     const withFee = getAmountOut(10_000n, reserveA, reserveB, 30n);
-    const noFee = getAmountOut(10_000n, reserveA, reserveB, 0n);
-    expect(noFee.amountOut > withFee.amountOut).toBe(true);
+    const minFee = getAmountOut(10_000n, reserveA, reserveB, 1n);
+    expect(minFee.amountOut > withFee.amountOut).toBe(true);
+  });
+
+  it('rejects a zero fee — not a valid tier on the real contract', () => {
+    expect(() => getAmountOut(10_000n, reserveA, reserveB, 0n)).toThrow(
+      'feeBps must be between'
+    );
   });
 
   it('higher fee gives smaller output', () => {
@@ -245,7 +253,7 @@ describe('getAmountOut', () => {
 
   it('throws on excessive fee', () => {
     expect(() => getAmountOut(10_000n, reserveA, reserveB, 1001n)).toThrow(
-      'exceeds maximum'
+      'feeBps must be between'
     );
   });
 
